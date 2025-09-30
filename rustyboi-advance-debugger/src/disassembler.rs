@@ -10,12 +10,10 @@ impl Disassembler {
         Self::disassemble_opcode(opcode, addr, |offset| read_fn(addr + offset))
     }
 
-    fn disassemble_opcode<F>(opcode: u32, pc: u32, mut read_fn: F) -> (String, u32)
+    fn disassemble_opcode<F>(opcode: u32, _pc: u32, mut _read_fn: F) -> (String, u32)
     where
         F: FnMut(u32) -> u32,
     {
-        match opcode {
-            _ => (format!("UNK 0x{:08X}", opcode), 4)
-        }
+        (format!("UNK 0x{:08X}", opcode), 4)
     }
 }

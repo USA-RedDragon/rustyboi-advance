@@ -67,6 +67,12 @@ pub struct Mmio {
     cartridge: Option<cartridge::Cartridge>,
 }
 
+impl Default for Mmio {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Mmio {
     pub fn new() -> Self {
         Mmio {

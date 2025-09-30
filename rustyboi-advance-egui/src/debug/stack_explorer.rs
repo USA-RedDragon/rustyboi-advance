@@ -36,7 +36,7 @@ impl Gui {
                     // Show stack contents around SP with scroll offset
                     let sp_addr: u32 = sp.into(); // Convert to u32 for address arithmetic
                     let base_start = sp_addr.saturating_sub(16); // 4 entries above SP (16 bytes, 4 bytes per ARM word)
-                    let scroll_adjustment = (self.stack_scroll_offset as i32) * 4; // 4 bytes per scroll step for ARM
+                    let scroll_adjustment = self.stack_scroll_offset * 4; // 4 bytes per scroll step for ARM
                     let start_addr = if scroll_adjustment >= 0 {
                         base_start.saturating_sub(scroll_adjustment as u32)
                     } else {

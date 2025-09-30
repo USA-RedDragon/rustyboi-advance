@@ -229,6 +229,12 @@ pub struct Registers {
     pub spsr: PerModeRegister, // Saved Program Status Register
 }
 
+impl Default for Registers {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Registers {
     pub fn new() -> Self {
         Registers {

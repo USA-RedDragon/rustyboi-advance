@@ -26,7 +26,9 @@ impl Gui {
                     ui.set_width(280.0);
 
                     // ARM7TDMI General Purpose Registers (R0-R12)
-                    ui.small(egui::RichText::new("General Registers:").color(egui::Color32::LIGHT_GRAY));
+                    ui.small(
+                        egui::RichText::new("General Registers:").color(egui::Color32::LIGHT_GRAY),
+                    );
                     ui.monospace(
                         egui::RichText::new(format!("R0: {:08X}  R1: {:08X}", regs.r0, regs.r1))
                             .color(egui::Color32::WHITE),
@@ -58,17 +60,22 @@ impl Gui {
                     ui.separator();
 
                     // Special Registers
-                    ui.small(egui::RichText::new("Special Registers:").color(egui::Color32::LIGHT_GRAY));
-                    
+                    ui.small(
+                        egui::RichText::new("Special Registers:").color(egui::Color32::LIGHT_GRAY),
+                    );
+
                     // Get current CPU mode for SP/LR display
                     let current_mode = cpu::registers::Mode::from(regs.cpsr);
-                    
+
                     let current_sp = regs.sp();
                     let current_lr = regs.lr();
-                    
+
                     ui.monospace(
-                        egui::RichText::new(format!("SP: {:08X}  LR: {:08X}", current_sp, current_lr))
-                            .color(egui::Color32::LIGHT_BLUE),
+                        egui::RichText::new(format!(
+                            "SP: {:08X}  LR: {:08X}",
+                            current_sp, current_lr
+                        ))
+                        .color(egui::Color32::LIGHT_BLUE),
                     );
 
                     // CPSR flags
@@ -114,7 +121,7 @@ impl Gui {
                                 }),
                         );
                     });
-                    
+
                     ui.horizontal(|ui| {
                         ui.monospace(
                             egui::RichText::new(format!("I:{}", if i_flag { "1" } else { "0" }))
@@ -140,7 +147,7 @@ impl Gui {
                                     egui::Color32::GRAY
                                 }),
                         );
-                        
+
                         // Show current CPU mode
                         let mode_str = match current_mode {
                             cpu::registers::Mode::User => "USR",
@@ -177,7 +184,7 @@ impl Gui {
                         // ARM/Thumb instruction length depends on CPU state
                         let is_thumb = regs.get_flag(cpu::registers::Flag::ThumbState);
                         let instruction_length = if is_thumb { 2 } else { 4 }; // Thumb=16bit, ARM=32bit
-                        
+
                         let (mnemonic, _) = Disassembler::disassemble_with_reader(addr, |a| {
                             let mut word = 0u32;
                             for i in 0..4 {

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
-use winit::event::{Event, WindowEvent, ElementState, KeyEvent};
-use winit::keyboard::{PhysicalKey, KeyCode};
+use winit::event::{ElementState, Event, KeyEvent, WindowEvent};
+use winit::keyboard::{KeyCode, PhysicalKey};
 
 /// A simple input handler to replace winit_input_helper
 #[derive(Default)]
@@ -26,41 +26,40 @@ impl InputHandler {
         self.scale_factor = None;
 
         match event {
-            Event::WindowEvent { event, .. } => {
-                match event {
-                    WindowEvent::CloseRequested => {
-                        self.close_requested = true;
-                        true
-                    }
-                    WindowEvent::KeyboardInput { 
-                        event: KeyEvent { 
+            Event::WindowEvent { event, .. } => match event {
+                WindowEvent::CloseRequested => {
+                    self.close_requested = true;
+                    true
+                }
+                WindowEvent::KeyboardInput {
+                    event:
+                        KeyEvent {
                             physical_key: PhysicalKey::Code(keycode),
                             state,
                             ..
                         },
-                        ..
-                    } => {
-                        match state {
-                            ElementState::Pressed => {
-                                if !self.keys_held.contains(keycode) {
-                                    self.keys_pressed.insert(*keycode);
-                                }
-                                self.keys_held.insert(*keycode);
+                    ..
+                } => {
+                    match state {
+                        ElementState::Pressed => {
+                            if !self.keys_held.contains(keycode) {
+                                self.keys_pressed.insert(*keycode);
                             }
-                            ElementState::Released => {
-                                self.keys_held.remove(keycode);
-                                self.keys_released.insert(*keycode);
-                            }
+                            self.keys_held.insert(*keycode);
                         }
-                        true
+                        ElementState::Released => {
+                            self.keys_held.remove(keycode);
+                            self.keys_released.insert(*keycode);
+                        }
                     }
-                    WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                        self.scale_factor = Some(*scale_factor);
-                        true
-                    }
-                    _ => false,
+                    true
                 }
-            }
+                WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                    self.scale_factor = Some(*scale_factor);
+                    true
+                }
+                _ => false,
+            },
             _ => false,
         }
     }
@@ -75,11 +74,6 @@ impl InputHandler {
         self.keys_held.contains(&keycode)
     }
 
-    /// Check if a key was just released this frame
-    pub fn key_released(&self, keycode: KeyCode) -> bool {
-        self.keys_released.contains(&keycode)
-    }
-
     /// Check if the close button was clicked
     pub fn close_requested(&self) -> bool {
         self.close_requested
@@ -88,10 +82,5 @@ impl InputHandler {
     /// Get the scale factor if it changed this frame
     pub fn scale_factor(&self) -> Option<f64> {
         self.scale_factor
-    }
-
-    /// Reset the close requested flag
-    pub fn reset_close_requested(&mut self) {
-        self.close_requested = false;
     }
 }

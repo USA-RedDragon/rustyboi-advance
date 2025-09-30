@@ -9,652 +9,37 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::KeyCode;
 use winit::window::{Window, WindowId};
 
+use crate::app_state;
 use crate::config;
 use crate::framework::Framework;
 use crate::input::InputHandler;
-use crate::renderer::WgpuRenderer;
-use rustyboi_advance_core_lib::{cartridge, gba, ppu};
-use rustyboi_advance_egui_lib::{Gui, actions::FileData, actions::GuiAction};
-
-use winit::event_loop::{ControlFlow, EventLoop};
+use crate::world;
+use rustyboi_advance_core_lib::gba;
+use rustyboi_advance_egui_lib::{Gui, actions::GuiAction};
 
 #[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
 #[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
-#[cfg(target_arch = "wasm32")]
-use winit::platform::web::WindowExtWebSys;
 
 const WIDTH: u32 = 240;
 const HEIGHT: u32 = 160;
 
-struct World {
-    gb: gba::GBA,
-    frame: Option<[u8; ppu::FRAMEBUFFER_SIZE]>,
-    error_state: Option<String>,
-    is_paused: bool,
-    step_single_frame: bool,
-    step_single_cycle: bool,
-    step_multiple_cycles: Option<u32>,
-    step_multiple_frames: Option<u32>,
-    current_rom_path: Option<String>,
-    current_bios_path: Option<String>,
-    // FPS and performance tracking
-    frame_times: Vec<Instant>,
-    last_title_update: Instant,
-    // Frame timing for 60fps
-    last_frame_time: Instant,
-    // Breakpoint status
-    breakpoint_hit: bool,
-    // Track if emulator was auto-paused due to missing ROM/BIOS
-    auto_paused_no_content: bool,
-}
-
-impl World {
-    fn new(gb: gba::GBA, config: Option<config::CleanConfig>) -> Self {
-        let (rom_path, bios_path) = if let Some(cfg) = config {
-            (cfg.rom, cfg.bios)
-        } else {
-            (None, None)
-        };
-
-        Self::new_with_paths(gb, rom_path, bios_path)
-    }
-
-    fn new_with_paths(gb: gba::GBA, rom_path: Option<String>, bios_path: Option<String>) -> Self {
-        let now = Instant::now();
-
-        // Check if both ROM and BIOS are missing - if so, start paused
-        let should_start_paused = !gb.has_rom() && !gb.has_bios();
-
-        Self {
-            gb,
-            frame: None,
-            error_state: None,
-            is_paused: should_start_paused,
-            step_single_frame: false,
-            step_single_cycle: false,
-            step_multiple_cycles: None,
-            step_multiple_frames: None,
-            current_rom_path: rom_path,
-            current_bios_path: bios_path,
-            frame_times: Vec::with_capacity(60), // Store last 60 frame times for FPS calculation
-            last_title_update: now,
-            last_frame_time: now,
-            breakpoint_hit: false,
-            auto_paused_no_content: should_start_paused,
-        }
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn save_state(&self, path: std::path::PathBuf) -> Result<String, std::io::Error> {
-        let filename = path.to_string_lossy().to_string();
-        self.gb.to_state_file(&filename)?;
-        println!("Game state saved to: {}", filename);
-        Ok(filename)
-    }
-
-    fn load_state(&mut self, file_data: FileData) -> Result<String, Box<dyn std::error::Error>> {
-        // Save the current ROM and BIOS paths before loading state
-        let saved_rom_path = self.current_rom_path.clone();
-        let saved_bios_path = self.current_bios_path.clone();
-
-        // Load the new state and get filename
-        let filename = match file_data {
-            #[cfg(not(target_arch = "wasm32"))]
-            FileData::Path(path) => {
-                let filename = path.to_string_lossy().to_string();
-                self.gb = gba::GBA::from_state_file(&filename)?;
-                filename
-            }
-            #[cfg(target_arch = "wasm32")]
-            FileData::Contents { name, data } => {
-                // For WASM, parse the data directly
-                let saved_state = String::from_utf8(data)?;
-                self.gb = serde_json::from_str(&saved_state)?;
-                name
-            }
-        };
-
-        // Reload the ROM if we had one loaded
-        if let Some(rom_path) = saved_rom_path {
-            match cartridge::Cartridge::load_from_path(&rom_path) {
-                Ok(cartridge) => {
-                    self.gb.insert(cartridge);
-                    self.current_rom_path = Some(rom_path);
-                    println!("Reloaded ROM: {}", self.current_rom_path.as_ref().unwrap());
-                }
-                Err(e) => {
-                    println!("Warning: Failed to reload ROM {}: {}", rom_path, e);
-                    self.current_rom_path = None;
-                }
-            }
-        }
-
-        // Reload the BIOS if we had one loaded
-        if let Some(bios_path) = saved_bios_path {
-            match self.gb.load_bios(&bios_path) {
-                Ok(_) => {
-                    self.current_bios_path = Some(bios_path);
-                    println!(
-                        "Reloaded BIOS: {}",
-                        self.current_bios_path.as_ref().unwrap()
-                    );
-                }
-                Err(e) => {
-                    println!("Warning: Failed to reload BIOS {}: {}", bios_path, e);
-                    self.current_bios_path = None;
-                }
-            }
-        }
-
-        // Clear any error state
-        self.error_state = None;
-
-        // Clear the current frame
-        self.frame = None;
-
-        // If emulator was auto-paused due to no content and state has content, unpause it
-        if self.auto_paused_no_content && (self.gb.has_rom() || self.gb.has_bios()) {
-            self.is_paused = false;
-            self.auto_paused_no_content = false;
-        }
-
-        println!("Game state loaded from: {}", filename);
-        Ok(filename)
-    }
-
-    fn load_rom(&mut self, file_data: FileData) -> Result<String, Box<dyn std::error::Error>> {
-        let (filename, cartridge, has_file_path) = match file_data {
-            #[cfg(not(target_arch = "wasm32"))]
-            FileData::Path(path) => {
-                let filename = path.to_string_lossy().to_string();
-                let cartridge = cartridge::Cartridge::load_from_path(&filename)?;
-                (filename, cartridge, true)
-            }
-            #[cfg(target_arch = "wasm32")]
-            FileData::Contents { name, data } => {
-                // For WASM, load from memory
-                let cartridge = cartridge::Cartridge::load_from_bytes(&data)?;
-                (name, cartridge, false)
-            }
-        };
-        self.gb.insert(cartridge);
-
-        // Track the current ROM path
-        self.current_rom_path = if has_file_path {
-            Some(filename.clone())
-        } else {
-            None // No file path for WASM content
-        };
-
-        // Reset the emulator to a clean state after loading the ROM
-        self.gb.reset();
-
-        // Clear any error state
-        self.error_state = None;
-
-        // Clear the current frame
-        self.frame = None;
-
-        // If emulator was auto-paused due to no content, unpause it now
-        if self.auto_paused_no_content {
-            self.is_paused = false;
-            self.auto_paused_no_content = false;
-        }
-
-        println!("ROM loaded from: {}", filename);
-        Ok(filename)
-    }
-
-    fn toggle_pause(&mut self) {
-        self.is_paused = !self.is_paused;
-    }
-
-    fn pause(&mut self) {
-        self.is_paused = true;
-    }
-
-    fn resume(&mut self) {
-        self.is_paused = false;
-    }
-
-    /// Check if the emulator should be automatically unpaused due to ROM loading
-    fn should_auto_unpause(&self) -> bool {
-        !self.auto_paused_no_content && !self.is_paused
-    }
-
-    fn restart(&mut self) {
-        // Reset the Game Boy to its initial state
-        self.gb.reset();
-
-        // Clear any error state
-        self.error_state = None;
-
-        // Clear the current frame
-        self.frame = None;
-
-        // Reset pause state
-        self.is_paused = false;
-    }
-
-    fn clear_error(&mut self) {
-        self.error_state = None;
-    }
-
-    fn draw(&mut self, frame: &mut [u8]) -> bool {
-        if let Some(data) = self.frame.as_ref() {
-            frame.copy_from_slice(data);
-            self.frame = None;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn run_until_frame(&mut self) -> Option<[u8; ppu::FRAMEBUFFER_SIZE]> {
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.gb.run_until_frame()));
-
-        match result {
-            Ok((frame, _breakpoint_hit)) => Some(frame),
-            Err(panic_info) => {
-                // Convert panic info to a string for debugging
-                let error_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                    format!("Emulator panic: {}", s)
-                } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                    format!("Emulator panic: {}", s)
-                } else {
-                    "Emulator panic: Unknown error".to_string()
-                };
-
-                println!("Game Boy emulator crashed: {}", error_msg);
-                None
-            }
-        }
-    }
-
-    fn run_until_frame_with_breakpoints(&mut self) -> (Option<[u8; ppu::FRAMEBUFFER_SIZE]>, bool) {
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.gb.run_until_frame()));
-
-        match result {
-            Ok((frame, breakpoint_hit)) => (Some(frame), breakpoint_hit),
-            Err(panic_info) => {
-                // Convert panic info to a string for debugging
-                let error_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                    format!("Emulator panic: {}", s)
-                } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                    format!("Emulator panic: {}", s)
-                } else {
-                    "Emulator panic: Unknown error".to_string()
-                };
-
-                println!("Game Boy emulator crashed: {}", error_msg);
-                (None, false)
-            }
-        }
-    }
-
-    fn update(&mut self) {
-        // Handle single frame stepping
-        if self.step_single_frame {
-            self.step_single_frame = false;
-            match self.run_until_frame() {
-                Some(frame) => {
-                    self.frame = Some(frame);
-                }
-                None => {
-                    self.error_state = Some("Emulator crashed during frame step".to_string());
-                    self.frame = None;
-                }
-            }
-            return;
-        }
-
-        // Handle single cycle stepping
-        if self.step_single_cycle {
-            self.step_single_cycle = false;
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let (_breakpoint_hit, _cycles) = self.gb.step_instruction();
-                // For cycle stepping, we need to get the current frame even if incomplete
-                self.gb.get_current_frame()
-            }));
-            match result {
-                Ok(frame) => {
-                    self.frame = Some(frame);
-                }
-                Err(panic_info) => {
-                    let error_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                        format!("Emulator panic during cycle step: {}", s)
-                    } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                        format!("Emulator panic during cycle step: {}", s)
-                    } else {
-                        "Emulator panic during cycle step: Unknown error".to_string()
-                    };
-                    self.error_state = Some(error_msg);
-                    self.frame = None;
-                }
-            }
-            return;
-        }
-
-        // Handle multiple cycle stepping
-        if let Some(count) = self.step_multiple_cycles.take() {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                for _ in 0..count {
-                    let (_breakpoint_hit, _cycles) = self.gb.step_instruction();
-                }
-                self.gb.get_current_frame()
-            }));
-            match result {
-                Ok(frame) => {
-                    self.frame = Some(frame);
-                }
-                Err(panic_info) => {
-                    let error_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                        format!("Emulator panic during multi-cycle step ({}): {}", count, s)
-                    } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                        format!("Emulator panic during multi-cycle step ({}): {}", count, s)
-                    } else {
-                        format!(
-                            "Emulator panic during multi-cycle step ({}): Unknown error",
-                            count
-                        )
-                    };
-                    self.error_state = Some(error_msg);
-                    self.frame = None;
-                }
-            }
-            return;
-        }
-
-        // Handle multiple frame stepping
-        if let Some(count) = self.step_multiple_frames.take() {
-            let mut success = true;
-            let mut final_frame = None;
-
-            for _ in 0..count {
-                match self.run_until_frame() {
-                    Some(_) => {} // Continue to next frame
-                    None => {
-                        success = false;
-                        break;
-                    }
-                }
-            }
-
-            if success {
-                final_frame = Some(self.gb.get_current_frame());
-            }
-
-            match final_frame {
-                Some(frame) => {
-                    self.frame = Some(frame);
-                }
-                None => {
-                    self.error_state = Some(format!(
-                        "Emulator crashed during multi-frame step ({})",
-                        count
-                    ));
-                    self.frame = None;
-                }
-            }
-            return;
-        }
-
-        // Skip updating if we're in an error state or paused
-        if self.error_state.is_some() || self.is_paused {
-            return;
-        }
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            // Frame timing: target 60fps (16.75ms per frame)
-            const TARGET_FRAME_TIME: Duration = Duration::from_micros(16750); // ~59.7 fps
-            let now = Instant::now();
-            let elapsed_since_last_frame = now.duration_since(self.last_frame_time);
-
-            // Only update if enough time has passed
-            if elapsed_since_last_frame < TARGET_FRAME_TIME {
-                let remaining = TARGET_FRAME_TIME - elapsed_since_last_frame;
-
-                // Sleep for most of the remaining time (not supported in WASM)
-                #[cfg(not(target_arch = "wasm32"))]
-                if remaining > Duration::from_micros(100) {
-                    std::thread::sleep(remaining - Duration::from_micros(50));
-                }
-                // Spin for precision
-                while self.last_frame_time.elapsed() < TARGET_FRAME_TIME {
-                    std::hint::spin_loop();
-                }
-            } else if elapsed_since_last_frame.as_millis() > 25 {
-                // Frame took too long
-                println!(
-                    "Slow frame: {}ms (target: {}ms)",
-                    elapsed_since_last_frame.as_millis(),
-                    TARGET_FRAME_TIME.as_millis()
-                );
-            }
-
-            self.last_frame_time = Instant::now();
-        }
-
-        // Use breakpoint-aware version if we have any breakpoints set
-        if self.gb.get_breakpoints().is_empty() {
-            // No breakpoints - use regular version for better performance
-            match self.run_until_frame() {
-                Some(frame_data) => {
-                    self.frame = Some(frame_data);
-                    self.update_performance_metrics();
-                }
-                None => {
-                    self.error_state = Some("Emulator crashed".to_string());
-                    println!(
-                        "Game Boy emulator crashed: {}",
-                        self.error_state.as_ref().unwrap()
-                    );
-                    self.frame = None;
-                }
-            }
-        } else {
-            // We have breakpoints - use breakpoint-aware version
-            let (frame_result, breakpoint_hit) = self.run_until_frame_with_breakpoints();
-            match frame_result {
-                Some(frame_data) => {
-                    self.frame = Some(frame_data);
-                    self.update_performance_metrics();
-
-                    // If a breakpoint was hit, pause emulation
-                    if breakpoint_hit {
-                        self.is_paused = true;
-                        self.breakpoint_hit = true;
-                        println!(
-                            "Breakpoint hit at PC: {:08X}",
-                            self.gb.get_cpu_registers().pc
-                        );
-                    }
-                }
-                None => {
-                    self.error_state = Some("Emulator crashed".to_string());
-                    println!(
-                        "Game Boy emulator crashed: {}",
-                        self.error_state.as_ref().unwrap()
-                    );
-                    self.frame = None;
-                }
-            }
-        }
-    }
-
-    fn update_performance_metrics(&mut self) {
-        let now = Instant::now();
-
-        // Track frame times for FPS calculation
-        self.frame_times.push(now);
-
-        // Keep only the last 60 frame times (1 second at 60 FPS)
-        if self.frame_times.len() > 60 {
-            self.frame_times.remove(0);
-        }
-    }
-
-    fn get_fps(&self) -> f64 {
-        let frame_count = self.frame_times.len();
-        if frame_count < 2 {
-            return 0.0;
-        }
-
-        let duration = self.frame_times[frame_count - 1].duration_since(self.frame_times[0]);
-        if duration.as_secs_f64() == 0.0 {
-            return 0.0;
-        }
-
-        (frame_count as f64 - 1.0) / duration.as_secs_f64()
-    }
-
-    fn update_window_title(&mut self, window: &winit::window::Window, is_paused: bool) {
-        let now = Instant::now();
-
-        // Update title every 500ms to avoid excessive updates
-        if now.duration_since(self.last_title_update).as_millis() >= 500 {
-            let fps = self.get_fps();
-
-            let title = if self.error_state.is_some() {
-                format!("RustyBoi Advance - ERROR | {:.1} FPS", fps)
-            } else if is_paused {
-                format!("RustyBoi Advance - PAUSED | {:.1} FPS", fps)
-            } else {
-                format!("RustyBoi Advance | {:.1} FPS", fps)
-            };
-
-            window.set_title(&title);
-            self.last_title_update = now;
-        }
-    }
-
-    // Breakpoint management methods
-    fn add_breakpoint(&mut self, address: u32) {
-        self.gb.add_breakpoint(address);
-    }
-
-    fn remove_breakpoint(&mut self, address: u32) {
-        self.gb.remove_breakpoint(address);
-    }
-
-    fn check_and_clear_breakpoint_hit(&mut self) -> bool {
-        let hit = self.breakpoint_hit;
-        self.breakpoint_hit = false;
-        hit
-    }
-}
-
-pub struct AppState {
-    pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
-    pub surface_config: wgpu::SurfaceConfiguration,
-    pub surface: wgpu::Surface<'static>,
-    pub scale_factor: f32,
-    pub egui_renderer: EguiRenderer,
-}
-
-impl AppState {
-    async fn new(
-        instance: &wgpu::Instance,
-        surface: wgpu::Surface<'static>,
-        window: &Window,
-        width: u32,
-        height: u32,
-    ) -> Self {
-        let power_pref = wgpu::PowerPreference::default();
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: power_pref,
-                force_fallback_adapter: false,
-                compatible_surface: Some(&surface),
-            })
-            .await
-            .expect("Failed to find an appropriate adapter");
-
-        let features = wgpu::Features::empty();
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: None,
-                required_features: features,
-                required_limits: Default::default(),
-                memory_hints: Default::default(),
-                trace: Default::default(),
-            })
-            .await
-            .expect("Failed to create device");
-
-        let swapchain_capabilities = surface.get_capabilities(&adapter);
-
-        // For WASM/WebGPU, use the first available format instead of hardcoding
-        let swapchain_format = if swapchain_capabilities.formats.is_empty() {
-            // Fallback to a common format
-            wgpu::TextureFormat::Rgba8UnormSrgb
-        } else {
-            // Prefer Bgra8UnormSrgb if available, otherwise use the first supported format
-            swapchain_capabilities
-                .formats
-                .iter()
-                .find(|&&format| format == wgpu::TextureFormat::Bgra8UnormSrgb)
-                .copied()
-                .unwrap_or(swapchain_capabilities.formats[0])
-        };
-
-        let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: swapchain_format,
-            width,
-            height,
-            present_mode: wgpu::PresentMode::AutoVsync,
-            desired_maximum_frame_latency: 0,
-            alpha_mode: swapchain_capabilities.alpha_modes[0],
-            view_formats: vec![],
-        };
-
-        surface.configure(&device, &surface_config);
-
-        let egui_renderer = EguiRenderer::new(&device, surface_config.format, None, 1, window);
-
-        let scale_factor = 1.0;
-
-        Self {
-            device,
-            queue,
-            surface,
-            surface_config,
-            egui_renderer,
-            scale_factor,
-        }
-    }
-
-    fn resize_surface(&mut self, width: u32, height: u32) {
-        self.surface_config.width = width;
-        self.surface_config.height = height;
-        self.surface.configure(&self.device, &self.surface_config);
-    }
-}
-
 pub struct App {
     instance: wgpu::Instance,
-    state: Option<AppState>,
+    state: Option<app_state::AppState>,
     window: Option<Arc<Window>>,
     #[cfg(target_arch = "wasm32")]
     initializing: bool,
     #[cfg(target_arch = "wasm32")]
-    shared_state: Rc<RefCell<Option<AppState>>>,
+    shared_state: Rc<RefCell<Option<app_state::AppState>>>,
     // Game Boy emulator components
-    renderer: Option<WgpuRenderer>,
     framework: Option<Framework>,
     gui: Option<Gui>,
-    world: Option<World>,
+    world: Option<world::World>,
     gameboy_has_rendered_frame: bool,
     input: Option<InputHandler>,
     config: Option<config::CleanConfig>,
-    last_frame_time: Instant,
     // Debounce timing for F and N keys
     f_key_press_time: Option<Instant>,
     n_key_press_time: Option<Instant>,
@@ -672,80 +57,48 @@ pub struct App {
 }
 
 impl App {
+    #[cfg(target_arch = "wasm32")]
     pub fn new() -> Self {
-        #[cfg(target_arch = "wasm32")]
-        {
-            // Create default config and Game Boy for WASM
-            let config = config::CleanConfig::default();
-            let mut gb = gba::GBA::new();
-            gb.skip_bios();
-            let world = World::new(gb, Some(config.clone()));
-            let input = InputHandler::new();
+        // Create default config and Game Boy for WASM
+        let config = config::CleanConfig::default();
+        let mut gb = gba::GBA::new();
+        gb.skip_bios();
+        let world = world::World::new(gb, Some(config.clone()));
+        let input = InputHandler::new();
 
-            let instance = egui_wgpu::wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-            Self {
-                instance,
-                state: None,
-                window: None,
-                initializing: false,
-                shared_state: Rc::new(RefCell::new(None)),
-                renderer: None,
-                framework: None,
-                gui: Some(Gui::new()),
-                world: Some(world),
-                gameboy_has_rendered_frame: false,
-                input: Some(input),
-                config: Some(config),
-                last_frame_time: Instant::now(),
-                f_key_press_time: None,
-                n_key_press_time: None,
-                f_key_processed_initial: false,
-                n_key_processed_initial: false,
-                f_last_repeat_time: None,
-                n_last_repeat_time: None,
-                manually_paused: false,
-                user_paused: false,
-                reusable_framebuffer: vec![0u8; WIDTH as usize * HEIGHT as usize * 4],
-                texture_handle: None,
-                image: None,
-            }
-        }
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let instance = egui_wgpu::wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-            Self {
-                instance,
-                state: None,
-                window: None,
-                renderer: None,
-                framework: None,
-                gui: None,
-                world: None,
-                gameboy_has_rendered_frame: false,
-                input: None,
-                config: None,
-                last_frame_time: Instant::now(),
-                f_key_press_time: None,
-                n_key_press_time: None,
-                f_key_processed_initial: false,
-                n_key_processed_initial: false,
-                f_last_repeat_time: None,
-                n_last_repeat_time: None,
-                manually_paused: false,
-                user_paused: false,
-                reusable_framebuffer: vec![0u8; WIDTH as usize * HEIGHT as usize * 4],
-                texture_handle: None,
-                image: None,
-            }
+        let instance = egui_wgpu::wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        Self {
+            instance,
+            state: None,
+            window: None,
+            initializing: false,
+            shared_state: Rc::new(RefCell::new(None)),
+            framework: None,
+            gui: Some(Gui::new()),
+            world: Some(world),
+            gameboy_has_rendered_frame: false,
+            input: Some(input),
+            config: Some(config),
+            f_key_press_time: None,
+            n_key_press_time: None,
+            f_key_processed_initial: false,
+            n_key_processed_initial: false,
+            f_last_repeat_time: None,
+            n_last_repeat_time: None,
+            manually_paused: false,
+            user_paused: false,
+            reusable_framebuffer: vec![0u8; WIDTH as usize * HEIGHT as usize * 4],
+            texture_handle: None,
+            image: None,
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new_with_gb(gb: gba::GBA, config: config::CleanConfig) -> Self {
         let instance = egui_wgpu::wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
 
         // Create World instance
-        let world = World::new_with_paths(gb, config.rom.clone(), config.bios.clone());
+        let world = world::World::new_with_paths(gb, config.rom.clone(), config.bios.clone());
         let should_start_paused = world.is_paused;
 
         Self {
@@ -756,14 +109,12 @@ impl App {
             initializing: false,
             #[cfg(target_arch = "wasm32")]
             shared_state: Rc::new(RefCell::new(None)),
-            renderer: None,
             framework: None,
             gui: Some(Gui::new()),
             world: Some(world),
             gameboy_has_rendered_frame: false,
             input: Some(InputHandler::new()),
             config: Some(config),
-            last_frame_time: Instant::now(),
             f_key_press_time: None,
             n_key_press_time: None,
             f_key_processed_initial: false,
@@ -778,6 +129,7 @@ impl App {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     async fn set_window(&mut self, window: Window) {
         let window = Arc::new(window);
 
@@ -804,7 +156,7 @@ impl App {
             .create_surface(window.clone())
             .expect("Failed to create surface!");
 
-        let state = AppState::new(
+        let state = app_state::AppState::new(
             &self.instance,
             surface,
             &window,
@@ -831,23 +183,20 @@ impl App {
     }
 
     fn handle_resized(&mut self, width: u32, height: u32) {
-        if width > 0 && height > 0 {
-            if let Some(state) = self.state.as_mut() {
+        if width > 0 && height > 0
+            && let Some(state) = self.state.as_mut() {
                 state.resize_surface(width, height);
             }
-        }
     }
 
     fn handle_redraw(&mut self) {
         // Attempt to handle minimizing window
-        if let Some(window) = self.window.as_ref() {
-            if let Some(min) = window.is_minimized() {
-                if min {
+        if let Some(window) = self.window.as_ref()
+            && let Some(min) = window.is_minimized()
+                && min {
                     println!("Window is minimized");
                     return;
                 }
-            }
-        }
 
         // For WASM, check if async initialization is complete
         #[cfg(target_arch = "wasm32")]
@@ -979,8 +328,8 @@ impl App {
                     }
 
                     // Only render Game Boy screen if we have both a texture AND have rendered at least one frame
-                    if let Some(texture_handle) = &self.texture_handle {
-                        if self.gameboy_has_rendered_frame {
+                    if let Some(texture_handle) = &self.texture_handle
+                        && self.gameboy_has_rendered_frame {
                             egui::CentralPanel::default()
                                 .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
                                 .show(state.egui_renderer.context(), |ui| {
@@ -1017,7 +366,6 @@ impl App {
                                     );
                                 });
                         }
-                    }
                 }
                 (gui_action, any_menu_open)
             } else {
@@ -1065,15 +413,15 @@ impl App {
                 self.manually_paused = self.user_paused || world.error_state.is_some();
             }
 
-            // Render Game Boy framebuffer if available
-            if let (Some(world), Some(renderer)) = (&mut self.world, &mut self.renderer) {
-                self.reusable_framebuffer.fill(0);
-                let has_new_frame = world.draw(&mut self.reusable_framebuffer);
+            // // Render Game Boy framebuffer if available
+            // if let (Some(world), Some(renderer)) = (&mut self.world, &mut self.renderer) {
+            //     self.reusable_framebuffer.fill(0);
+            //     let has_new_frame = world.draw(&mut self.reusable_framebuffer);
 
-                if has_new_frame {
-                    renderer.update_texture(&self.reusable_framebuffer);
-                }
-            }
+            //     if has_new_frame {
+            //         renderer.update_texture(&self.reusable_framebuffer);
+            //     }
+            // }
 
             // Finish egui frame and render everything
             let surface_texture = state.surface.get_current_texture();
@@ -1126,25 +474,25 @@ impl App {
                 GuiAction::LoadRom(file_data) => {
                     if let Some(world) = &mut self.world {
                         match world.load_rom(file_data) {
-                            Ok(msg) => {
+                            Ok(_msg) => {
                                 #[cfg(target_arch = "wasm32")]
                                 web_sys::console::log_1(
-                                    &format!("WASM ROM loaded successfully: {}", msg).into(),
+                                    &format!("WASM ROM loaded successfully: {}", _msg).into(),
                                 );
                             }
-                            Err(err) => {
+                            Err(_err) => {
                                 #[cfg(target_arch = "wasm32")]
                                 web_sys::console::log_1(
-                                    &format!("WASM ROM load error: {}", err).into(),
+                                    &format!("WASM ROM load error: {}", _err).into(),
                                 );
                             }
                         }
                     }
                 }
-                GuiAction::SaveState(path) => {
+                GuiAction::SaveState(_path) => {
                     #[cfg(not(target_arch = "wasm32"))]
                     if let Some(world) = &self.world {
-                        match world.save_state(path) {
+                        match world.save_state(_path) {
                             Ok(_msg) => {
                                 // Success handling
                             }
@@ -1216,6 +564,112 @@ impl App {
         // Request another redraw to keep the emulator running continuously
         if let Some(window) = &self.window {
             window.request_redraw();
+        }
+    }
+
+    fn handle_input_events(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(input) = &self.input {
+            if input.key_pressed(KeyCode::Escape) || input.close_requested() {
+                event_loop.exit();
+                return;
+            }
+
+            // Handle F key for frame stepping with debounce
+            if input.key_pressed(KeyCode::KeyF) {
+                if let Some(world) = &mut self.world
+                    && (self.manually_paused || world.error_state.is_some()) {
+                        // Initial press - execute immediately
+                        world.step_single_frame = true;
+                        let now = Instant::now();
+                        self.f_key_press_time = Some(now);
+                        self.f_last_repeat_time = Some(now);
+                        self.f_key_processed_initial = true;
+                        if let Some(window) = &self.window {
+                            window.request_redraw();
+                        }
+                    }
+            } else if input.key_held(KeyCode::KeyF) {
+                if let Some(world) = &mut self.world
+                    && (self.manually_paused || world.error_state.is_some())
+                        && let Some(press_time) = self.f_key_press_time
+                    {
+                        // Check if debounce period has elapsed
+                        const DEBOUNCE_DURATION: Duration = Duration::from_millis(250);
+                        const REPEAT_INTERVAL: Duration = Duration::from_millis(67);
+                        if press_time.elapsed() >= DEBOUNCE_DURATION {
+                            // Check if enough time has passed since last repeat
+                            if let Some(last_repeat) = self.f_last_repeat_time
+                                && last_repeat.elapsed() >= REPEAT_INTERVAL
+                            {
+                                world.step_single_frame = true;
+                                self.f_last_repeat_time = Some(Instant::now());
+                                if let Some(window) = &self.window {
+                                    window.request_redraw();
+                                }
+                            }
+                        }
+                    }
+            } else {
+                // Key released - reset state
+                self.f_key_press_time = None;
+                self.f_key_processed_initial = false;
+                self.f_last_repeat_time = None;
+            }
+
+            // Handle N key for cycle stepping with debounce
+            if input.key_pressed(KeyCode::KeyN) {
+                if let Some(world) = &mut self.world
+                    && (self.manually_paused || world.error_state.is_some()) {
+                        // Initial press - execute immediately
+                        world.step_single_cycle = true;
+                        let now = Instant::now();
+                        self.n_key_press_time = Some(now);
+                        self.n_last_repeat_time = Some(now);
+                        self.n_key_processed_initial = true;
+                        if let Some(window) = &self.window {
+                            window.request_redraw();
+                        }
+                    }
+            } else if input.key_held(KeyCode::KeyN) {
+                if let Some(world) = &mut self.world
+                    && (self.manually_paused || world.error_state.is_some())
+                        && let Some(press_time) = self.n_key_press_time
+                    {
+                        const DEBOUNCE_DURATION: Duration = Duration::from_millis(250);
+                        const REPEAT_INTERVAL: Duration = Duration::from_millis(67);
+                        // Check if debounce period has elapsed
+                        if press_time.elapsed() >= DEBOUNCE_DURATION {
+                            // Check if enough time has passed since last repeat
+                            if let Some(last_repeat) = self.n_last_repeat_time
+                                && last_repeat.elapsed() >= REPEAT_INTERVAL
+                            {
+                                world.step_single_cycle = true;
+                                self.n_last_repeat_time = Some(Instant::now());
+                                if let Some(window) = &self.window {
+                                    window.request_redraw();
+                                }
+                            }
+                        }
+                    }
+            } else {
+                // Key released - reset state
+                self.n_key_press_time = None;
+                self.n_key_processed_initial = false;
+                self.n_last_repeat_time = None;
+            }
+
+            if let Some(scale_factor) = input.scale_factor()
+                && let Some(framework) = &mut self.framework {
+                    framework.scale_factor(scale_factor);
+                }
+
+            // Handle Game Boy input based on keybinds
+            if let Some(world) = &mut self.world {
+                world.update();
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
         }
     }
 }
@@ -1349,7 +803,8 @@ impl ApplicationHandler for App {
                         initial_height
                     };
 
-                    let state = AppState::new(&instance, surface, &window, width, height).await;
+                    let state =
+                        app_state::AppState::new(&instance, surface, &window, width, height).await;
 
                     // Set the shared state
                     *shared_state.borrow_mut() = Some(state);
@@ -1423,269 +878,11 @@ impl ApplicationHandler for App {
             }
             _ => {
                 // For other events, request redraw only if egui needs it
-                if needs_repaint {
-                    if let Some(window) = self.window.as_ref() {
+                if needs_repaint
+                    && let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
-                }
             }
         }
     }
-}
-
-impl App {
-    fn handle_input_events(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(input) = &self.input {
-            if input.key_pressed(KeyCode::Escape) || input.close_requested() {
-                event_loop.exit();
-                return;
-            }
-
-            // Handle F key for frame stepping with debounce
-            if input.key_pressed(KeyCode::KeyF) {
-                if let Some(world) = &mut self.world {
-                    if self.manually_paused || world.error_state.is_some() {
-                        // Initial press - execute immediately
-                        world.step_single_frame = true;
-                        let now = Instant::now();
-                        self.f_key_press_time = Some(now);
-                        self.f_last_repeat_time = Some(now);
-                        self.f_key_processed_initial = true;
-                        if let Some(window) = &self.window {
-                            window.request_redraw();
-                        }
-                    }
-                }
-            } else if input.key_held(KeyCode::KeyF) {
-                if let Some(world) = &mut self.world {
-                    if (self.manually_paused || world.error_state.is_some())
-                        && let Some(press_time) = self.f_key_press_time
-                    {
-                        // Check if debounce period has elapsed
-                        const DEBOUNCE_DURATION: Duration = Duration::from_millis(250);
-                        const REPEAT_INTERVAL: Duration = Duration::from_millis(67);
-                        if press_time.elapsed() >= DEBOUNCE_DURATION {
-                            // Check if enough time has passed since last repeat
-                            if let Some(last_repeat) = self.f_last_repeat_time
-                                && last_repeat.elapsed() >= REPEAT_INTERVAL
-                            {
-                                world.step_single_frame = true;
-                                self.f_last_repeat_time = Some(Instant::now());
-                                if let Some(window) = &self.window {
-                                    window.request_redraw();
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Key released - reset state
-                self.f_key_press_time = None;
-                self.f_key_processed_initial = false;
-                self.f_last_repeat_time = None;
-            }
-
-            // Handle N key for cycle stepping with debounce
-            if input.key_pressed(KeyCode::KeyN) {
-                if let Some(world) = &mut self.world {
-                    if self.manually_paused || world.error_state.is_some() {
-                        // Initial press - execute immediately
-                        world.step_single_cycle = true;
-                        let now = Instant::now();
-                        self.n_key_press_time = Some(now);
-                        self.n_last_repeat_time = Some(now);
-                        self.n_key_processed_initial = true;
-                        if let Some(window) = &self.window {
-                            window.request_redraw();
-                        }
-                    }
-                }
-            } else if input.key_held(KeyCode::KeyN) {
-                if let Some(world) = &mut self.world {
-                    if (self.manually_paused || world.error_state.is_some())
-                        && let Some(press_time) = self.n_key_press_time
-                    {
-                        const DEBOUNCE_DURATION: Duration = Duration::from_millis(250);
-                        const REPEAT_INTERVAL: Duration = Duration::from_millis(67);
-                        // Check if debounce period has elapsed
-                        if press_time.elapsed() >= DEBOUNCE_DURATION {
-                            // Check if enough time has passed since last repeat
-                            if let Some(last_repeat) = self.n_last_repeat_time
-                                && last_repeat.elapsed() >= REPEAT_INTERVAL
-                            {
-                                world.step_single_cycle = true;
-                                self.n_last_repeat_time = Some(Instant::now());
-                                if let Some(window) = &self.window {
-                                    window.request_redraw();
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Key released - reset state
-                self.n_key_press_time = None;
-                self.n_key_processed_initial = false;
-                self.n_last_repeat_time = None;
-            }
-
-            if let Some(scale_factor) = input.scale_factor() {
-                if let Some(framework) = &mut self.framework {
-                    framework.scale_factor(scale_factor);
-                }
-            }
-
-            // Handle Game Boy input based on keybinds
-            if let (Some(world), Some(config)) = (&mut self.world, &self.config) {
-                world.update();
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
-            }
-        }
-    }
-}
-
-use egui::Context;
-use egui_wgpu::Renderer;
-use egui_wgpu::wgpu::{CommandEncoder, Device, Queue, StoreOp, TextureFormat, TextureView};
-use egui_winit::State;
-
-pub struct EguiRenderer {
-    state: State,
-    renderer: Renderer,
-    frame_started: bool,
-}
-
-impl EguiRenderer {
-    pub fn context(&self) -> &Context {
-        self.state.egui_ctx()
-    }
-
-    pub fn new(
-        device: &Device,
-        output_color_format: TextureFormat,
-        output_depth_format: Option<TextureFormat>,
-        msaa_samples: u32,
-        window: &Window,
-    ) -> EguiRenderer {
-        let egui_context = Context::default();
-
-        let egui_state = egui_winit::State::new(
-            egui_context,
-            egui::viewport::ViewportId::ROOT,
-            &window,
-            Some(window.scale_factor() as f32),
-            None,
-            Some(2 * 1024), // default dimension is 2048
-        );
-        let egui_renderer = Renderer::new(
-            device,
-            output_color_format,
-            output_depth_format,
-            msaa_samples,
-            true,
-        );
-
-        EguiRenderer {
-            state: egui_state,
-            renderer: egui_renderer,
-            frame_started: false,
-        }
-    }
-
-    pub fn handle_input(&mut self, window: &Window, event: &WindowEvent) -> bool {
-        let response = self.state.on_window_event(window, event);
-        response.repaint
-    }
-
-    pub fn ppp(&mut self, v: f32) {
-        self.context().set_pixels_per_point(v);
-    }
-
-    pub fn begin_frame(&mut self, window: &Window) {
-        let raw_input = self.state.take_egui_input(window);
-        self.state.egui_ctx().begin_pass(raw_input);
-        self.frame_started = true;
-    }
-
-    pub fn end_frame_and_draw(
-        &mut self,
-        device: &Device,
-        queue: &Queue,
-        encoder: &mut CommandEncoder,
-        window: &Window,
-        window_surface_view: &TextureView,
-        screen_descriptor: ScreenDescriptor,
-    ) {
-        if !self.frame_started {
-            panic!("begin_frame must be called before end_frame_and_draw can be called!");
-        }
-
-        self.ppp(screen_descriptor.pixels_per_point);
-
-        let full_output = self.state.egui_ctx().end_pass();
-
-        // Handle platform output more carefully to avoid animation loops
-        let platform_output = full_output.platform_output;
-
-        self.state.handle_platform_output(window, platform_output);
-
-        // Don't automatically request redraws from here - let input events handle it
-
-        // Always render - the change detection was causing panels to blink
-        let tris = self
-            .state
-            .egui_ctx()
-            .tessellate(full_output.shapes, self.state.egui_ctx().pixels_per_point());
-        for (id, image_delta) in &full_output.textures_delta.set {
-            self.renderer
-                .update_texture(device, queue, *id, image_delta);
-        }
-        self.renderer
-            .update_buffers(device, queue, encoder, &tris, &screen_descriptor);
-        let rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: window_surface_view,
-                resolve_target: None,
-                ops: egui_wgpu::wgpu::Operations {
-                    load: egui_wgpu::wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            label: Some("egui main render pass"),
-            occlusion_query_set: None,
-        });
-
-        self.renderer
-            .render(&mut rpass.forget_lifetime(), &tris, &screen_descriptor);
-        for x in &full_output.textures_delta.free {
-            self.renderer.free_texture(x)
-        }
-
-        self.frame_started = false;
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub fn run_with_gui(
-    gb: gba::GBA,
-    config: config::CleanConfig,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let event_loop = EventLoop::new().unwrap();
-    event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = crate::app::App::new_with_gb(gb, config);
-    event_loop
-        .run_app(&mut app)
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
-}
-
-#[cfg(target_arch = "wasm32")]
-pub async fn run_with_gui_async(gb: gba::GBA, config: config::CleanConfig) {
-    let event_loop = EventLoop::new().unwrap();
-    event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = crate::app::App::new();
-    event_loop.run_app(&mut app).expect("Failed to run app");
 }

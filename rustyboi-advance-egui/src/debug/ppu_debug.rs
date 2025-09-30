@@ -1,6 +1,6 @@
 use crate::ui::Gui;
 use egui::Context;
-use rustyboi_advance_core_lib::{gba, memory, ppu};
+use rustyboi_advance_core_lib::{gba, ppu};
 
 impl Gui {
     pub(crate) fn render_ppu_debug_panel(&mut self, ctx: &Context, gb: Option<&gba::GBA>) {

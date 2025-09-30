@@ -22,6 +22,12 @@ pub struct Ppu {
     fb_b: [u8; FRAMEBUFFER_SIZE],
 }
 
+impl Default for Ppu {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Ppu {
     pub fn new() -> Self {
         Ppu {
@@ -34,7 +40,7 @@ impl Ppu {
         }
     }
 
-    pub fn step(&mut self, mmio: &mut mmio::Mmio) {
+    pub fn step(&mut self, _mmio: &mut mmio::Mmio) {
         if self.disabled {
             return;
         }

@@ -8,6 +8,12 @@ pub struct ARM7TDMI {
     pub stopped: bool,
 }
 
+impl Default for ARM7TDMI {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ARM7TDMI {
     pub fn new() -> Self {
         ARM7TDMI {
@@ -18,7 +24,7 @@ impl ARM7TDMI {
     }
 
     pub fn step(&mut self, mmio: &mut memory::mmio::Mmio) -> u32 {
-        let mut cycles = 0;
+        let cycles = 0;
 
         // If halted, check if we should exit halt state
         if self.halted {
@@ -31,12 +37,9 @@ impl ARM7TDMI {
         self.execute(opcode, mmio) + cycles
     }
 
-    fn execute(&mut self, opcode: u32, mmio: &mut memory::mmio::Mmio) -> u32 {
-        match opcode {
-            _ => {
-                unimplemented!("Unimplemented ARM opcode: 0x{:08X}", opcode);
-                1 // Default to 1 cycle for unimplemented opcodes
-            }
+    fn execute(&mut self, opcode: u32, _mmio: &mut memory::mmio::Mmio) -> u32 {
+        {
+            unimplemented!("Unimplemented ARM opcode: 0x{:08X}", opcode);
         }
     }
 }

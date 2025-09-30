@@ -15,9 +15,6 @@ pub struct Gui {
     show_stack_explorer: bool,
     show_memory_explorer: bool,
     show_ppu_debug: bool,
-    show_sprite_debug: bool,
-    show_palette_explorer: bool,
-    show_tile_explorer: bool,
     show_keybind_settings: bool,
     show_breakpoint_panel: bool,
     breakpoint_address_input: String,
@@ -33,6 +30,12 @@ pub struct Gui {
     pending_dialog_result: Arc<Mutex<Option<GuiAction>>>,
 }
 
+impl Default for Gui {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Gui {
     pub fn new() -> Self {
         Self {
@@ -42,9 +45,6 @@ impl Gui {
             show_stack_explorer: false,
             show_memory_explorer: false,
             show_ppu_debug: false,
-            show_sprite_debug: false,
-            show_palette_explorer: false,
-            show_tile_explorer: false,
             show_keybind_settings: false,
             show_breakpoint_panel: false,
             breakpoint_address_input: String::from("00000000"),
@@ -209,6 +209,10 @@ impl Gui {
 
         if self.show_memory_explorer {
             self.render_memory_explorer_panel(ctx, gb);
+        }
+
+        if self.show_ppu_debug {
+            self.render_ppu_debug_panel(ctx, gb);
         }
 
         if self.show_keybind_settings {

@@ -6,7 +6,9 @@ use crate::ppu;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs;
+#[cfg(not(target_arch = "wasm32"))]
 use std::io;
 
 #[derive(Serialize, Deserialize)]
@@ -18,6 +20,12 @@ pub struct GBA {
     skip_bios: bool,
     #[serde(skip, default)]
     breakpoints: HashSet<u32>,
+}
+
+impl Default for GBA {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GBA {

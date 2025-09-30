@@ -1,33 +1,4 @@
 use clap::Parser;
-use rustyboi_advance_core_lib::gba;
-use winit::keyboard::KeyCode;
-
-#[derive(Debug, Clone)]
-pub struct KeyBinds {
-    pub a: KeyCode,
-    pub b: KeyCode,
-    pub start: KeyCode,
-    pub select: KeyCode,
-    pub up: KeyCode,
-    pub down: KeyCode,
-    pub left: KeyCode,
-    pub right: KeyCode,
-}
-
-impl Default for KeyBinds {
-    fn default() -> Self {
-        Self {
-            a: KeyCode::KeyZ,
-            b: KeyCode::KeyX,
-            start: KeyCode::Enter,
-            select: KeyCode::Space,
-            up: KeyCode::ArrowUp,
-            down: KeyCode::ArrowDown,
-            left: KeyCode::ArrowLeft,
-            right: KeyCode::ArrowRight,
-        }
-    }
-}
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -67,8 +38,6 @@ pub struct CleanConfig {
     #[cfg(not(target_arch = "wasm32"))]
     // skip BIOS on startup
     pub skip_bios: bool,
-    // keybinds configuration
-    pub keybinds: KeyBinds,
 }
 
 impl RawConfig {
@@ -89,12 +58,12 @@ impl RawConfig {
             scale: self.scale,
             #[cfg(not(target_arch = "wasm32"))]
             skip_bios: _skip_bios,
-            keybinds: KeyBinds::default(),
         }
     }
 }
 
 impl CleanConfig {
+    #[cfg(target_arch = "wasm32")]
     /// Get default configuration by parsing empty arguments with clap
     pub fn default() -> Self {
         use clap::Parser;

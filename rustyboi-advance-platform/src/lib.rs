@@ -2,13 +2,14 @@
 #![forbid(unsafe_code)]
 
 mod app;
+mod app_state;
 mod config;
+mod egui_renderer;
 mod framework;
 mod input;
-mod renderer;
 mod run;
+mod world;
 
-pub use crate::renderer::WgpuRenderer;
 pub use crate::run::run;
 
 #[cfg(target_arch = "wasm32")]

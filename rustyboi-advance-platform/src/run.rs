@@ -1,8 +1,30 @@
+#[cfg(not(target_arch = "wasm32"))]
+use crate::config;
+#[cfg(not(target_arch = "wasm32"))]
 use rustyboi_advance_core_lib::gba;
 
-use crate::app;
-use crate::config;
-use clap::Parser;
+use winit::event_loop::{ControlFlow, EventLoop};
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_with_gui(
+    gb: gba::GBA,
+    config: config::CleanConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let event_loop = EventLoop::new().unwrap();
+    event_loop.set_control_flow(ControlFlow::Poll);
+    let mut app = crate::app::App::new_with_gb(gb, config);
+    event_loop
+        .run_app(&mut app)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn run_with_gui_async() {
+    let event_loop = EventLoop::new().unwrap();
+    event_loop.set_control_flow(ControlFlow::Poll);
+    let mut app = crate::app::App::new();
+    event_loop.run_app(&mut app).expect("Failed to run app");
+}
 
 pub async fn run() {
     #[cfg(target_arch = "wasm32")]
@@ -11,16 +33,14 @@ pub async fn run() {
         // Only initialize logger if it hasn't been initialized yet
         let _ = console_log::init_with_level(log::Level::Trace);
 
-        let config = config::RawConfig::try_parse_from(std::iter::empty::<String>())
-            .expect("Failed to create default config")
-            .clean();
-
-        wasm_bindgen_futures::spawn_local(app::run_with_gui_async(gba::GBA::new(), config));
+        wasm_bindgen_futures::spawn_local(run_with_gui_async());
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        use rustyboi_advance_core_lib::cartridge;
+        use crate::config;
+        use clap::Parser;
+        use rustyboi_advance_core_lib::{cartridge, gba};
 
         let config = config::RawConfig::parse().clean();
 
@@ -44,7 +64,7 @@ pub async fn run() {
             gb.skip_bios();
         }
 
-        match app::run_with_gui(gb, config) {
+        match run_with_gui(gb, config) {
             Ok(_) => {}
             Err(e) => eprintln!("Error: {}", e),
         }
