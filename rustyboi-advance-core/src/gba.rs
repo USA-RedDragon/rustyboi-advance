@@ -85,10 +85,10 @@ impl GBA {
 
     pub fn run_until_frame(&mut self) -> ([u8; ppu::FRAMEBUFFER_SIZE], bool) {
         let mut cpu_cycles_this_frame = 0u32;
-        // Normal GBA frame should be 70224 cycles (154 scanlines × 456 cycles)
+        // Normal GBA frame should be 280896 cycles (228 scanlines × 1232 cycles)
         // If we exceed this, we assume PPU is disabled or stuck
         // and return to avoid audio buildup
-        const MAX_CYCLES_PER_FRAME: u32 = 70224;
+        const MAX_CYCLES_PER_FRAME: u32 = 280896;
 
         loop {
             let (breakpoint_hit, cycles) = self.step_instruction();
