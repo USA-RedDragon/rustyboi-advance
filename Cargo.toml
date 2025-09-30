@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "rustyboi-advance-core",
+    "rustyboi-advance-debugger",
+    "rustyboi-advance-egui",
+    "rustyboi-advance-platform",
+]
+default-members = [
+    "rustyboi-advance-core",
+    "rustyboi-advance-egui",
+    "rustyboi-advance-platform",
+]
+
+[profile.dev]
+opt-level = "s"
+
+[profile.release]
+strip = true
+opt-level = "s"
+lto = true
