@@ -35,5 +35,7 @@ jobs:
           rustup default stable
           rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - name: Install wasm-pack
+        run: cargo install wasm-pack
       - name: Build WASM
         run: ./build-wasm.sh
