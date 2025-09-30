@@ -137,8 +137,8 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let scale = self.config.as_ref().map(|c| c.scale as u32).unwrap_or(7);
-                let width = 160 * scale;
-                let height = 144 * scale;
+                let width = WIDTH * scale;
+                let height = HEIGHT * scale;
                 let _ = window.request_inner_size(PhysicalSize::new(width, height));
                 (width, height)
             }
