@@ -303,6 +303,14 @@ impl Registers {
         self.sp.write_current(self.cpsr, value);
     }
 
+    pub fn set_sp_all_modes(&mut self, value: u32) {
+        self.sp.fiq = value;
+        self.sp.irq = value;
+        self.sp.svc = value;
+        self.sp.und = value;
+        self.sp.abt = value;
+    }
+
     /// Get the current link register value
     pub fn get_lr(&self) -> u32 {
         self.lr.read_current(self.cpsr)

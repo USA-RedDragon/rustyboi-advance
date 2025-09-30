@@ -33,6 +33,9 @@ impl GBA {
 
     pub fn skip_bios(&mut self) {
         self.skip_bios = true;
+        self.cpu.registers.pc = 0x08000000;
+        self.cpu.registers.set_sp_all_modes(0x03007F00);
+        self.cpu.registers.cpsr = 0x6000001F;
     }
 
     pub fn insert(&mut self, cartridge: cartridge::Cartridge) {
