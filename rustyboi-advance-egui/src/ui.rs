@@ -179,6 +179,7 @@ impl Gui {
                     ui.checkbox(&mut self.show_cpu_registers, "CPU Registers");
                     ui.checkbox(&mut self.show_stack_explorer, "Stack Explorer");
                     ui.checkbox(&mut self.show_memory_explorer, "Memory Explorer");
+                    ui.checkbox(&mut self.show_ppu_debug, "PPU Debug");
                     ui.separator();
                     ui.checkbox(&mut self.show_breakpoint_panel, "Breakpoint Manager");
                 });

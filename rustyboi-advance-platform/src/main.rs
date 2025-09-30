@@ -5,7 +5,6 @@ mod app;
 mod app_state;
 mod config;
 mod egui_renderer;
-mod framework;
 mod input;
 mod run;
 mod world;

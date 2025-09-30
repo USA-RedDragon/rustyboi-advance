@@ -11,7 +11,6 @@ use winit::window::{Window, WindowId};
 
 use crate::app_state;
 use crate::config;
-use crate::framework::Framework;
 use crate::input::InputHandler;
 use crate::world;
 use rustyboi_advance_core_lib::gba;
@@ -34,7 +33,6 @@ pub struct App {
     #[cfg(target_arch = "wasm32")]
     shared_state: Rc<RefCell<Option<app_state::AppState>>>,
     // Game Boy emulator components
-    framework: Option<Framework>,
     gui: Option<Gui>,
     world: Option<world::World>,
     gameboy_has_rendered_frame: bool,
@@ -73,7 +71,6 @@ impl App {
             window: None,
             initializing: false,
             shared_state: Rc::new(RefCell::new(None)),
-            framework: None,
             gui: Some(Gui::new()),
             world: Some(world),
             gameboy_has_rendered_frame: false,
@@ -109,7 +106,6 @@ impl App {
             initializing: false,
             #[cfg(target_arch = "wasm32")]
             shared_state: Rc::new(RefCell::new(None)),
-            framework: None,
             gui: Some(Gui::new()),
             world: Some(world),
             gameboy_has_rendered_frame: false,
@@ -413,16 +409,6 @@ impl App {
                 self.manually_paused = self.user_paused || world.error_state.is_some();
             }
 
-            // // Render Game Boy framebuffer if available
-            // if let (Some(world), Some(renderer)) = (&mut self.world, &mut self.renderer) {
-            //     self.reusable_framebuffer.fill(0);
-            //     let has_new_frame = world.draw(&mut self.reusable_framebuffer);
-
-            //     if has_new_frame {
-            //         renderer.update_texture(&self.reusable_framebuffer);
-            //     }
-            // }
-
             // Finish egui frame and render everything
             let surface_texture = state.surface.get_current_texture();
 
@@ -658,11 +644,6 @@ impl App {
                 self.n_last_repeat_time = None;
             }
 
-            if let Some(scale_factor) = input.scale_factor()
-                && let Some(framework) = &mut self.framework {
-                    framework.scale_factor(scale_factor);
-                }
-
             // Handle Game Boy input based on keybinds
             if let Some(world) = &mut self.world {
                 world.update();
@@ -854,11 +835,6 @@ impl ApplicationHandler for App {
         let mut needs_repaint = false;
         if let (Some(state), Some(window)) = (self.state.as_mut(), self.window.as_ref()) {
             needs_repaint = state.egui_renderer.handle_input(window, &event);
-        }
-
-        // Handle framework events if available
-        if let (Some(framework), Some(window)) = (&mut self.framework, self.window.as_ref()) {
-            framework.handle_event(window, &event);
         }
 
         match event {

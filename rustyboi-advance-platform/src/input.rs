@@ -78,9 +78,4 @@ impl InputHandler {
     pub fn close_requested(&self) -> bool {
         self.close_requested
     }
-
-    /// Get the scale factor if it changed this frame
-    pub fn scale_factor(&self) -> Option<f64> {
-        self.scale_factor
-    }
 }
