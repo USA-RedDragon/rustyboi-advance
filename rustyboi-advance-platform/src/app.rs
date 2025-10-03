@@ -388,6 +388,36 @@ impl App {
 
             let (gui_action, menu_open) = gui_result;
 
+            // Handle GUI actions BEFORE auto-pause logic so toggle_pause works correctly
+            if let Some(action) = &gui_action {
+                match action {
+                    GuiAction::TogglePause => {
+                        if let Some(world) = &mut self.world {
+                            // Instead of toggling world.is_paused (which may have been auto-paused by menu),
+                            // we toggle based on the gui_paused_state (which reflects user's manual pause intent)
+                            let new_pause_state = !gui_paused_state;
+                            self.user_paused = new_pause_state;
+                            self.manually_paused = self.user_paused || world.error_state.is_some();
+
+                            // Set world pause state directly
+                            if new_pause_state {
+                                world.pause();
+                            } else {
+                                world.resume();
+                            }
+                        }
+                    }
+                    GuiAction::Restart => {
+                        if let Some(world) = &mut self.world {
+                            world.restart();
+                        }
+                    }
+                    _ => {
+                        // Other actions will be handled later
+                    }
+                }
+            }
+
             // Auto-pause when menu is open, but respect manual pause state
             let should_be_paused = self.manually_paused || menu_open;
             if let Some(world) = &mut self.world {
@@ -521,18 +551,8 @@ impl App {
                         world.step_multiple_frames = Some(frames);
                     }
                 }
-                GuiAction::Restart => {
-                    if let Some(world) = &mut self.world {
-                        world.restart();
-                    }
-                }
-                GuiAction::TogglePause => {
-                    if let Some(world) = &mut self.world {
-                        world.toggle_pause();
-                        // Update our tracking of user pause state
-                        self.user_paused = world.is_paused;
-                        self.manually_paused = self.user_paused || world.error_state.is_some();
-                    }
+                GuiAction::Restart | GuiAction::TogglePause => {
+                    // Already handled earlier before auto-pause logic
                 }
                 GuiAction::ClearError => {
                     if let Some(world) = &mut self.world {

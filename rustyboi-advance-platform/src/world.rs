@@ -55,7 +55,7 @@ impl World {
 
         // Check if both ROM and BIOS are missing - if so, start paused
         // Also respect the user's start_paused config option
-        let should_start_paused = start_paused || (!gb.has_rom() && !gb.has_bios());
+        let should_start_paused = start_paused || (!gba.has_rom() && !gba.has_bios());
 
         Self {
             gba,
@@ -200,10 +200,6 @@ impl World {
 
         println!("ROM loaded from: {}", filename);
         Ok(filename)
-    }
-
-    pub fn toggle_pause(&mut self) {
-        self.is_paused = !self.is_paused;
     }
 
     pub fn pause(&mut self) {
