@@ -65,7 +65,7 @@ impl Gui {
         ctx: &Context,
         paused: bool,
         registers: Option<&cpu::registers::Registers>,
-        gb: Option<&gba::GBA>,
+        gba: Option<&gba::GBA>,
     ) -> (Option<GuiAction>, bool) {
         let mut action = None;
         let mut any_menu_open = false;
@@ -78,7 +78,7 @@ impl Gui {
         }
 
         self.render_menu_bar(ctx, &mut action, &mut any_menu_open, paused);
-        self.render_debug_panels(ctx, registers, gb, &mut action, paused);
+        self.render_debug_panels(ctx, registers, gba, &mut action, paused);
         self.render_status_panel(ctx);
         self.render_error_panel(ctx, &mut action);
 
@@ -196,24 +196,24 @@ impl Gui {
         &mut self,
         ctx: &Context,
         registers: Option<&cpu::registers::Registers>,
-        gb: Option<&gba::GBA>,
+        gba: Option<&gba::GBA>,
         action: &mut Option<GuiAction>,
         paused: bool,
     ) {
         if self.show_cpu_registers {
-            self.render_cpu_registers_panel(ctx, registers, gb, action, paused);
+            self.render_cpu_registers_panel(ctx, registers, gba, action, paused);
         }
 
         if self.show_stack_explorer {
-            self.render_stack_explorer_panel(ctx, registers, gb);
+            self.render_stack_explorer_panel(ctx, registers, gba);
         }
 
         if self.show_memory_explorer {
-            self.render_memory_explorer_panel(ctx, gb);
+            self.render_memory_explorer_panel(ctx, gba);
         }
 
         if self.show_ppu_debug {
-            self.render_ppu_debug_panel(ctx, gb);
+            self.render_ppu_debug_panel(ctx, gba);
         }
 
         if self.show_keybind_settings {
@@ -221,7 +221,7 @@ impl Gui {
         }
 
         if self.show_breakpoint_panel {
-            self.render_breakpoint_panel(ctx, action, gb);
+            self.render_breakpoint_panel(ctx, action, gba);
         }
     }
 
@@ -296,7 +296,7 @@ impl Gui {
         &mut self,
         ctx: &Context,
         action: &mut Option<GuiAction>,
-        gb: Option<&gba::GBA>,
+        gba: Option<&gba::GBA>,
     ) {
         egui::Window::new("Breakpoint Manager")
             .default_width(300.0)
@@ -330,11 +330,11 @@ impl Gui {
                 ui.separator();
 
                 // Display current breakpoints if we have access to GB
-                if let Some(gb) = gb {
+                if let Some(gba) = gba {
                     ui.label("Active Breakpoints:");
                     ui.separator();
 
-                    let breakpoints: Vec<u32> = gb.get_breakpoints().iter().cloned().collect();
+                    let breakpoints: Vec<u32> = gba.get_breakpoints().iter().cloned().collect();
                     if breakpoints.is_empty() {
                         ui.label("No breakpoints set");
                     } else {

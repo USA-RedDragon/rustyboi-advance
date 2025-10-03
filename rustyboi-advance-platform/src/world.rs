@@ -9,7 +9,7 @@ use web_time::Instant;
 use crate::config;
 
 pub struct World {
-    pub gb: gba::GBA,
+    pub gba: gba::GBA,
     frame: Option<[u8; ppu::FRAMEBUFFER_SIZE]>,
     pub error_state: Option<String>,
     pub is_paused: bool,
@@ -34,18 +34,18 @@ pub struct World {
 
 impl World {
     #[cfg(target_arch = "wasm32")]
-    pub fn new(gb: gba::GBA, config: Option<config::CleanConfig>) -> Self {
+    pub fn new(gba: gba::GBA, config: Option<config::CleanConfig>) -> Self {
         let (rom_path, bios_path, start_paused) = if let Some(cfg) = config {
             (cfg.rom, cfg.bios, false) // WASM doesn't support start_paused config
         } else {
             (None, None, false)
         };
 
-        Self::new_with_paths(gb, rom_path, bios_path, start_paused)
+        Self::new_with_paths(gba, rom_path, bios_path, start_paused)
     }
 
     pub fn new_with_paths(
-        gb: gba::GBA,
+        gba: gba::GBA,
         rom_path: Option<String>,
         bios_path: Option<String>,
         start_paused: bool,
@@ -58,7 +58,7 @@ impl World {
         let should_start_paused = start_paused || (!gb.has_rom() && !gb.has_bios());
 
         Self {
-            gb,
+            gba,
             frame: None,
             error_state: None,
             is_paused: should_start_paused,
@@ -81,7 +81,7 @@ impl World {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn save_state(&self, path: std::path::PathBuf) -> Result<String, std::io::Error> {
         let filename = path.to_string_lossy().to_string();
-        self.gb.to_state_file(&filename)?;
+        self.gba.to_state_file(&filename)?;
         println!("Game state saved to: {}", filename);
         Ok(filename)
     }
@@ -99,14 +99,14 @@ impl World {
             #[cfg(not(target_arch = "wasm32"))]
             FileData::Path(path) => {
                 let filename = path.to_string_lossy().to_string();
-                self.gb = gba::GBA::from_state_file(&filename)?;
+                self.gba = gba::GBA::from_state_file(&filename)?;
                 filename
             }
             #[cfg(target_arch = "wasm32")]
             FileData::Contents { name, data } => {
                 // For WASM, parse the data directly
                 let saved_state = String::from_utf8(data)?;
-                self.gb = serde_json::from_str(&saved_state)?;
+                self.gba = serde_json::from_str(&saved_state)?;
                 name
             }
         };
@@ -115,7 +115,7 @@ impl World {
         if let Some(rom_path) = saved_rom_path {
             match cartridge::Cartridge::load_from_path(&rom_path) {
                 Ok(cartridge) => {
-                    self.gb.insert(cartridge);
+                    self.gba.insert(cartridge);
                     self.current_rom_path = Some(rom_path);
                     println!("Reloaded ROM: {}", self.current_rom_path.as_ref().unwrap());
                 }
@@ -128,7 +128,7 @@ impl World {
 
         // Reload the BIOS if we had one loaded
         if let Some(bios_path) = saved_bios_path {
-            match self.gb.load_bios(&bios_path) {
+            match self.gba.load_bios(&bios_path) {
                 Ok(_) => {
                     self.current_bios_path = Some(bios_path);
                     println!(
@@ -150,7 +150,7 @@ impl World {
         self.frame = None;
 
         // If emulator was auto-paused due to no content and state has content, unpause it
-        if self.auto_paused_no_content && (self.gb.has_rom() || self.gb.has_bios()) {
+        if self.auto_paused_no_content && (self.gba.has_rom() || self.gba.has_bios()) {
             self.is_paused = false;
             self.auto_paused_no_content = false;
         }
@@ -174,7 +174,7 @@ impl World {
                 (name, cartridge, false)
             }
         };
-        self.gb.insert(cartridge);
+        self.gba.insert(cartridge);
 
         // Track the current ROM path
         self.current_rom_path = if has_file_path {
@@ -184,7 +184,7 @@ impl World {
         };
 
         // Reset the emulator to a clean state after loading the ROM
-        self.gb.reset();
+        self.gba.reset();
 
         // Clear any error state
         self.error_state = None;
@@ -216,7 +216,7 @@ impl World {
 
     pub fn restart(&mut self) {
         // Reset the Game Boy to its initial state
-        self.gb.reset();
+        self.gba.reset();
 
         // Clear any error state
         self.error_state = None;
@@ -244,7 +244,7 @@ impl World {
 
     fn run_until_frame(&mut self) -> Option<[u8; ppu::FRAMEBUFFER_SIZE]> {
         let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.gb.run_until_frame()));
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.gba.run_until_frame()));
 
         match result {
             Ok((frame, _breakpoint_hit)) => Some(frame),
@@ -266,7 +266,7 @@ impl World {
 
     fn run_until_frame_with_breakpoints(&mut self) -> (Option<[u8; ppu::FRAMEBUFFER_SIZE]>, bool) {
         let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.gb.run_until_frame()));
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.gba.run_until_frame()));
 
         match result {
             Ok((frame, breakpoint_hit)) => (Some(frame), breakpoint_hit),
@@ -306,9 +306,9 @@ impl World {
         if self.step_single_cycle {
             self.step_single_cycle = false;
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let (_breakpoint_hit, _cycles) = self.gb.step_instruction();
+                let (_breakpoint_hit, _cycles) = self.gba.step_instruction();
                 // For cycle stepping, we need to get the current frame even if incomplete
-                self.gb.get_current_frame()
+                self.gba.get_current_frame()
             }));
             match result {
                 Ok(frame) => {
@@ -333,9 +333,9 @@ impl World {
         if let Some(count) = self.step_multiple_cycles.take() {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 for _ in 0..count {
-                    let (_breakpoint_hit, _cycles) = self.gb.step_instruction();
+                    let (_breakpoint_hit, _cycles) = self.gba.step_instruction();
                 }
-                self.gb.get_current_frame()
+                self.gba.get_current_frame()
             }));
             match result {
                 Ok(frame) => {
@@ -375,7 +375,7 @@ impl World {
             }
 
             if success {
-                final_frame = Some(self.gb.get_current_frame());
+                final_frame = Some(self.gba.get_current_frame());
             }
 
             match final_frame {
@@ -431,7 +431,7 @@ impl World {
         }
 
         // Use breakpoint-aware version if we have any breakpoints set
-        if self.gb.get_breakpoints().is_empty() {
+        if self.gba.get_breakpoints().is_empty() {
             // No breakpoints - use regular version for better performance
             match self.run_until_frame() {
                 Some(frame_data) => {
@@ -461,7 +461,7 @@ impl World {
                         self.breakpoint_hit = true;
                         println!(
                             "Breakpoint hit at PC: {:08X}",
-                            self.gb.get_cpu_registers().pc
+                            self.gba.get_cpu_registers().pc
                         );
                     }
                 }
@@ -526,11 +526,11 @@ impl World {
 
     // Breakpoint management methods
     pub fn add_breakpoint(&mut self, address: u32) {
-        self.gb.add_breakpoint(address);
+        self.gba.add_breakpoint(address);
     }
 
     pub fn remove_breakpoint(&mut self, address: u32) {
-        self.gb.remove_breakpoint(address);
+        self.gba.remove_breakpoint(address);
     }
 
     pub fn check_and_clear_breakpoint_hit(&mut self) -> bool {

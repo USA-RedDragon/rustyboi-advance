@@ -7,10 +7,10 @@ impl Gui {
         &mut self,
         ctx: &Context,
         registers: Option<&cpu::registers::Registers>,
-        gb: Option<&gba::GBA>,
+        gba: Option<&gba::GBA>,
     ) {
         if let Some(regs) = registers
-            && let Some(gb_ref) = gb
+            && let Some(gba_ref) = gba
         {
             egui::Window::new("Stack Explorer")
                 .default_pos([220.0, 50.0])
@@ -46,10 +46,10 @@ impl Gui {
 
                     for addr in (start_addr..=end_addr).step_by(4) {
                         // ARM uses 4-byte words
-                        let val1 = gb_ref.read_memory(addr);
-                        let val2 = gb_ref.read_memory(addr + 1);
-                        let val3 = gb_ref.read_memory(addr + 2);
-                        let val4 = gb_ref.read_memory(addr + 3);
+                        let val1 = gba_ref.read_memory(addr);
+                        let val2 = gba_ref.read_memory(addr + 1);
+                        let val3 = gba_ref.read_memory(addr + 2);
+                        let val4 = gba_ref.read_memory(addr + 3);
                         let word_val = (val1 as u32)
                             | ((val2 as u32) << 8)
                             | ((val3 as u32) << 16)

@@ -140,8 +140,8 @@ impl GBA {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_state_file(path: &str) -> Result<Self, io::Error> {
         let saved_state = fs::read_to_string(path)?;
-        let gb = serde_json::from_str(&saved_state)?;
-        Ok(gb)
+        let gba = serde_json::from_str(&saved_state)?;
+        Ok(gba)
     }
 
     #[cfg(not(target_arch = "wasm32"))]

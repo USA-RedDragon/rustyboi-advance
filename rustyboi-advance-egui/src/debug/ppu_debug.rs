@@ -3,9 +3,9 @@ use egui::Context;
 use rustyboi_advance_core_lib::{gba, ppu};
 
 impl Gui {
-    pub(crate) fn render_ppu_debug_panel(&mut self, ctx: &Context, gb: Option<&gba::GBA>) {
-        if let Some(gb_ref) = gb {
-            let ppu = gb_ref.get_ppu();
+    pub(crate) fn render_ppu_debug_panel(&mut self, ctx: &Context, gba: Option<&gba::GBA>) {
+        if let Some(gba_ref) = gba {
+            let ppu = gba_ref.get_ppu();
             egui::Window::new("PPU Debug")
                 .default_pos([640.0, 50.0])
                 .default_size([250.0, 500.0])

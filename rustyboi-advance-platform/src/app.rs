@@ -59,9 +59,9 @@ impl App {
     pub fn new() -> Self {
         // Create default config and Game Boy for WASM
         let config = config::CleanConfig::default();
-        let mut gb = gba::GBA::new();
-        gb.skip_bios();
-        let world = world::World::new(gb, Some(config.clone()));
+        let mut gba = gba::GBA::new();
+        gba.skip_bios();
+        let world = world::World::new(gba, Some(config.clone()));
         let input = InputHandler::new();
 
         let instance = egui_wgpu::wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
@@ -91,12 +91,12 @@ impl App {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn new_with_gb(gb: gba::GBA, config: config::CleanConfig) -> Self {
+    pub fn new_with_gba(gba: gba::GBA, config: config::CleanConfig) -> Self {
         let instance = egui_wgpu::wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
 
         // Create World instance
         let world = world::World::new_with_paths(
-            gb,
+            gba,
             config.rom.clone(),
             config.bios.clone(),
             config.start_paused,
@@ -283,8 +283,8 @@ impl App {
                     .set_visuals(egui::Visuals::dark());
 
                 // Render GUI and get actions (with optional Game Boy data)
-                let (registers, gb_ref) = if let Some(world) = &self.world {
-                    (Some(world.gb.get_cpu_registers()), Some(&world.gb))
+                let (registers, gba_ref) = if let Some(world) = &self.world {
+                    (Some(world.gba.get_cpu_registers()), Some(&world.gba))
                 } else {
                     (None, None)
                 };
@@ -293,7 +293,7 @@ impl App {
                     state.egui_renderer.context(),
                     gui_paused_state,
                     registers,
-                    gb_ref,
+                    gba_ref,
                 );
 
                 // Render Game Boy screen

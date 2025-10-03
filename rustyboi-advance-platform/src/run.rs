@@ -7,12 +7,12 @@ use winit::event_loop::{ControlFlow, EventLoop};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_with_gui(
-    gb: gba::GBA,
+    gba: gba::GBA,
     config: config::CleanConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = crate::app::App::new_with_gb(gb, config);
+    let mut app = crate::app::App::new_with_gba(gba, config);
     event_loop
         .run_app(&mut app)
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
@@ -44,27 +44,27 @@ pub async fn run() {
 
         let config = config::RawConfig::parse().clean();
 
-        let mut gb = gba::GBA::new();
+        let mut gba = gba::GBA::new();
 
         if let Some(state) = config.state.as_ref() {
-            gb = gba::GBA::from_state_file(state).expect("Failed to load state file");
+            gba = gba::GBA::from_state_file(state).expect("Failed to load state file");
         }
 
         if let Some(rom) = config.rom.as_ref() {
             let cartridge =
                 cartridge::Cartridge::load_from_path(rom).expect("Failed to load ROM file");
-            gb.insert(cartridge);
+            gba.insert(cartridge);
         }
 
         if let Some(bios) = config.bios.as_ref() {
-            gb.load_bios(bios).expect("Failed to load BIOS file");
+            gba.load_bios(bios).expect("Failed to load BIOS file");
         }
 
         if config.skip_bios {
-            gb.skip_bios();
+            gba.skip_bios();
         }
 
-        match run_with_gui(gb, config) {
+        match run_with_gui(gba, config) {
             Ok(_) => {}
             Err(e) => eprintln!("Error: {}", e),
         }

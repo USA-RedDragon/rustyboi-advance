@@ -9,12 +9,12 @@ impl Gui {
         &mut self,
         ctx: &Context,
         registers: Option<&cpu::registers::Registers>,
-        gb: Option<&gba::GBA>,
+        gba: Option<&gba::GBA>,
         action: &mut Option<GuiAction>,
         paused: bool,
     ) {
         if let Some(regs) = registers
-            && let Some(gb_ref) = gb
+            && let Some(gba_ref) = gba
         {
             egui::Window::new("ARM7TDMI CPU Debug")
                 .default_pos([10.0, 50.0])
@@ -172,7 +172,7 @@ impl Gui {
                     ui.small(
                         egui::RichText::new("3-Stage Pipeline:").color(egui::Color32::LIGHT_GRAY),
                     );
-                    let cpu = gb_ref.get_cpu();
+                    let cpu = gba_ref.get_cpu();
                     let (fetch, decode, execute) = cpu.get_pipeline_state();
 
                     // Fetch stage
@@ -324,8 +324,8 @@ impl Gui {
                         let instruction = if is_thumb {
                             // Thumb mode: decode 16-bit instruction
                             Disassembler::decode_thumb_with_reader(addr, |a| {
-                                let byte0 = gb_ref.read_memory(a) as u16;
-                                let byte1 = gb_ref.read_memory(a + 1) as u16;
+                                let byte0 = gba_ref.read_memory(a) as u16;
+                                let byte1 = gba_ref.read_memory(a + 1) as u16;
                                 byte0 | (byte1 << 8)
                             })
                         } else {
@@ -333,7 +333,7 @@ impl Gui {
                             Disassembler::decode_with_reader(addr, |a| {
                                 let mut word = 0u32;
                                 for i in 0..4 {
-                                    word |= (gb_ref.read_memory(a + i) as u32) << (i * 8);
+                                    word |= (gba_ref.read_memory(a + i) as u32) << (i * 8);
                                 }
                                 word
                             })
@@ -357,17 +357,17 @@ impl Gui {
                             // Thumb: 16-bit instruction
                             format!(
                                 "{:02X}{:02X}",
-                                gb_ref.read_memory(addr + 1),
-                                gb_ref.read_memory(addr)
+                                gba_ref.read_memory(addr + 1),
+                                gba_ref.read_memory(addr)
                             )
                         } else {
                             // ARM: 32-bit instruction
                             format!(
                                 "{:02X}{:02X}{:02X}{:02X}",
-                                gb_ref.read_memory(addr + 3),
-                                gb_ref.read_memory(addr + 2),
-                                gb_ref.read_memory(addr + 1),
-                                gb_ref.read_memory(addr)
+                                gba_ref.read_memory(addr + 3),
+                                gba_ref.read_memory(addr + 2),
+                                gba_ref.read_memory(addr + 1),
+                                gba_ref.read_memory(addr)
                             )
                         };
 
