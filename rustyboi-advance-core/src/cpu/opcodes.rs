@@ -201,7 +201,126 @@ fn calculate_multiply_cycles(multiplier: u32) -> u32 {
     4
 }
 
+/// Enum for different load value types
+#[derive(Debug, Clone, Copy)]
+enum LoadType {
+    Word,
+    Byte,
+    Halfword,
+    SignedByte,
+    SignedHalfword,
+}
+
+/// Enum for different store value types
+#[derive(Debug, Clone, Copy)]
+enum StoreType {
+    Word,
+    Byte,
+    Halfword,
+}
+
 impl ARM7TDMI {
+    /// Generic load instruction handler
+    /// Handles LDR, LDRB, LDRH, LDRSB, LDRSH with unified logic
+    #[inline]
+    fn execute_load_generic(
+        &mut self,
+        rd: Register,
+        rn: Register,
+        addressing: &rustyboi_advance_debugger_lib::disassembler::AddressingMode,
+        load_type: LoadType,
+        mmio: &mut memory::mmio::Mmio,
+    ) -> u32 {
+        use crate::memory::Addressable;
+
+        let (addr, writeback) = self.calculate_address(rn, addressing);
+
+        // Load value based on type
+        let value = match load_type {
+            LoadType::Word => {
+                // Word access - rotate if unaligned
+                let word = (mmio as &dyn Addressable).read32(addr & !0x3);
+                let rotation = (addr & 0x3) * 8;
+                word.rotate_right(rotation)
+            }
+            LoadType::Byte => (mmio as &dyn Addressable).read(addr) as u32,
+            LoadType::Halfword => {
+                // Halfword - rotate if unaligned
+                let halfword = (mmio as &dyn Addressable).read16(addr & !0x1);
+                let rotation = (addr & 0x1) * 8;
+                (halfword as u32).rotate_right(rotation)
+            }
+            LoadType::SignedByte => {
+                let byte = (mmio as &dyn Addressable).read(addr) as i8;
+                byte as i32 as u32 // Sign-extend
+            }
+            LoadType::SignedHalfword => {
+                let halfword = (mmio as &dyn Addressable).read16(addr & !0x1) as i16;
+                halfword as i32 as u32 // Sign-extend
+            }
+        };
+
+        // Write to destination register
+        self.registers.write_register(rd, value);
+
+        // Writeback if needed
+        if writeback {
+            let (new_base, _) = self.calculate_address(rn, addressing);
+            self.registers.write_register(rn, new_base);
+        }
+
+        // If loading to PC, flush pipeline
+        if rd == Register::PC {
+            let is_thumb = self.registers.get_flag(Flag::ThumbState);
+            let aligned_value = if is_thumb { value & !0x1 } else { value & !0x3 };
+            self.branch_to(aligned_value);
+            return 0; // Cycles counted during pipeline flush/refill
+        }
+
+        // Load instructions take 1S + 1N + 1I cycles
+        self.add_internal_cycles(1);
+        2
+    }
+
+    /// Generic store instruction handler
+    /// Handles STR, STRB, STRH with unified logic
+    #[inline]
+    fn execute_store_generic(
+        &mut self,
+        rd: Register,
+        rn: Register,
+        addressing: &rustyboi_advance_debugger_lib::disassembler::AddressingMode,
+        store_type: StoreType,
+        mmio: &mut memory::mmio::Mmio,
+    ) -> u32 {
+        use crate::memory::Addressable;
+
+        let (addr, writeback) = self.calculate_address(rn, addressing);
+        let value = self.registers.read_register(rd);
+
+        // Store value based on type
+        match store_type {
+            StoreType::Word => {
+                (mmio as &mut dyn Addressable).write32(addr & !0x3, value);
+            }
+            StoreType::Byte => {
+                (mmio as &mut dyn Addressable).write(addr, value as u8);
+            }
+            StoreType::Halfword => {
+                (mmio as &mut dyn Addressable).write16(addr & !0x1, value as u16);
+            }
+        }
+
+        // Writeback if needed
+        if writeback {
+            let (new_base, _) = self.calculate_address(rn, addressing);
+            self.registers.write_register(rn, new_base);
+        }
+
+        // Store instructions take 2N cycles
+        2
+    }
+
     #[inline]
     /// Execute a data processing instruction
     pub fn execute_data_processing(
@@ -508,47 +627,12 @@ impl ARM7TDMI {
         byte_access: bool,
         mmio: &mut memory::mmio::Mmio,
     ) -> u32 {
-        use crate::memory::Addressable;
-
-        let (addr, writeback) = self.calculate_address(rn, addressing);
-
-        // Perform the load
-        let value = if byte_access {
-            (mmio as &dyn Addressable).read(addr) as u32
+        let load_type = if byte_access {
+            LoadType::Byte
         } else {
-            // Word access - rotate if unaligned
-            let word = (mmio as &dyn Addressable).read32(addr & !0x3);
-            let rotation = (addr & 0x3) * 8;
-            word.rotate_right(rotation)
+            LoadType::Word
         };
-
-        // Write to destination register
-        self.registers.write_register(rd, value);
-
-        // Writeback if needed (and not post-indexed which already did it)
-        if writeback {
-            let (new_base, _) = self.calculate_address(rn, addressing);
-            self.registers.write_register(rn, new_base);
-        }
-
-        // If loading to PC, flush pipeline
-        if rd == Register::PC {
-            // Align based on current mode before loading
-            let is_thumb = self.registers.get_flag(Flag::ThumbState);
-            let aligned_value = if is_thumb {
-                value & !0x1 // Thumb: halfword align
-            } else {
-                value & !0x3 // ARM: word align
-            };
-            self.branch_to(aligned_value);
-            return 0; // Cycles counted during pipeline flush/refill
-        }
-
-        // LDR takes 1S + 1N + 1I cycles (memory access + internal)
-        // Add internal cycles for data transfer
-        self.add_internal_cycles(1);
-
-        2 // Base cycle count for LDR
+        self.execute_load_generic(rd, rn, addressing, load_type, mmio)
     }
 
     /// Execute a store register instruction (STR/STRB)
@@ -561,29 +645,12 @@ impl ARM7TDMI {
         byte_access: bool,
         mmio: &mut memory::mmio::Mmio,
     ) -> u32 {
-        use crate::memory::Addressable;
-
-        let (addr, writeback) = self.calculate_address(rn, addressing);
-
-        // Get value to store
-        let value = self.registers.read_register(rd);
-
-        // Perform the store
-        if byte_access {
-            (mmio as &mut dyn Addressable).write(addr, value as u8);
+        let store_type = if byte_access {
+            StoreType::Byte
         } else {
-            // Word access - must be aligned
-            (mmio as &mut dyn Addressable).write32(addr & !0x3, value);
+            StoreType::Word
         };
-
-        // Writeback if needed (and not post-indexed which already did it)
-        if writeback {
-            let (new_base, _) = self.calculate_address(rn, addressing);
-            self.registers.write_register(rn, new_base);
-        }
-
-        // STR takes 2N cycles (non-sequential memory access)
-        2
+        self.execute_store_generic(rd, rn, addressing, store_type, mmio)
     }
 
     /// Execute a load register halfword instruction (LDRH)
@@ -595,35 +662,7 @@ impl ARM7TDMI {
         addressing: &rustyboi_advance_debugger_lib::disassembler::AddressingMode,
         mmio: &mut memory::mmio::Mmio,
     ) -> u32 {
-        use crate::memory::Addressable;
-
-        let (addr, writeback) = self.calculate_address(rn, addressing);
-
-        // Load halfword (16-bit) - rotate if unaligned
-        let halfword = (mmio as &dyn Addressable).read16(addr & !0x1);
-        let rotation = (addr & 0x1) * 8;
-        let value = (halfword as u32).rotate_right(rotation);
-
-        // Write to destination register
-        self.registers.write_register(rd, value);
-
-        // Writeback if needed
-        if writeback {
-            let (new_base, _) = self.calculate_address(rn, addressing);
-            self.registers.write_register(rn, new_base);
-        }
-
-        // If loading to PC, flush pipeline
-        if rd == Register::PC {
-            let is_thumb = self.registers.get_flag(Flag::ThumbState);
-            let aligned_value = if is_thumb { value & !0x1 } else { value & !0x3 };
-            self.branch_to(aligned_value);
-            return 0;
-        }
-
-        // LDRH takes similar cycles to LDR
-        self.add_internal_cycles(1);
-        2
+        self.execute_load_generic(rd, rn, addressing, LoadType::Halfword, mmio)
     }
 
     /// Execute a store register halfword instruction (STRH)
@@ -635,24 +674,7 @@ impl ARM7TDMI {
         addressing: &rustyboi_advance_debugger_lib::disassembler::AddressingMode,
         mmio: &mut memory::mmio::Mmio,
     ) -> u32 {
-        use crate::memory::Addressable;
-
-        let (addr, writeback) = self.calculate_address(rn, addressing);
-
-        // Get value to store (bottom 16 bits)
-        let value = self.registers.read_register(rd);
-
-        // Store halfword (16-bit) - must be aligned
-        (mmio as &mut dyn Addressable).write16(addr & !0x1, value as u16);
-
-        // Writeback if needed
-        if writeback {
-            let (new_base, _) = self.calculate_address(rn, addressing);
-            self.registers.write_register(rn, new_base);
-        }
-
-        // STRH takes 2N cycles
-        2
+        self.execute_store_generic(rd, rn, addressing, StoreType::Halfword, mmio)
     }
 
     /// Execute a load register signed byte instruction (LDRSB)
@@ -664,34 +686,7 @@ impl ARM7TDMI {
         addressing: &rustyboi_advance_debugger_lib::disassembler::AddressingMode,
         mmio: &mut memory::mmio::Mmio,
     ) -> u32 {
-        use crate::memory::Addressable;
-
-        let (addr, writeback) = self.calculate_address(rn, addressing);
-
-        // Load signed byte and sign-extend to 32 bits
-        let byte = (mmio as &dyn Addressable).read(addr) as i8;
-        let value = byte as i32 as u32; // Sign-extend
-
-        // Write to destination register
-        self.registers.write_register(rd, value);
-
-        // Writeback if needed
-        if writeback {
-            let (new_base, _) = self.calculate_address(rn, addressing);
-            self.registers.write_register(rn, new_base);
-        }
-
-        // If loading to PC, flush pipeline
-        if rd == Register::PC {
-            let is_thumb = self.registers.get_flag(Flag::ThumbState);
-            let aligned_value = if is_thumb { value & !0x1 } else { value & !0x3 };
-            self.branch_to(aligned_value);
-            return 0;
-        }
-
-        // LDRSB takes similar cycles to LDR
-        self.add_internal_cycles(1);
-        2
+        self.execute_load_generic(rd, rn, addressing, LoadType::SignedByte, mmio)
     }
 
     /// Execute a load register signed halfword instruction (LDRSH)
@@ -703,34 +698,7 @@ impl ARM7TDMI {
         addressing: &rustyboi_advance_debugger_lib::disassembler::AddressingMode,
         mmio: &mut memory::mmio::Mmio,
     ) -> u32 {
-        use crate::memory::Addressable;
-
-        let (addr, writeback) = self.calculate_address(rn, addressing);
-
-        // Load signed halfword and sign-extend to 32 bits
-        let halfword = (mmio as &dyn Addressable).read16(addr & !0x1) as i16;
-        let value = halfword as i32 as u32; // Sign-extend
-
-        // Write to destination register
-        self.registers.write_register(rd, value);
-
-        // Writeback if needed
-        if writeback {
-            let (new_base, _) = self.calculate_address(rn, addressing);
-            self.registers.write_register(rn, new_base);
-        }
-
-        // If loading to PC, flush pipeline
-        if rd == Register::PC {
-            let is_thumb = self.registers.get_flag(Flag::ThumbState);
-            let aligned_value = if is_thumb { value & !0x1 } else { value & !0x3 };
-            self.branch_to(aligned_value);
-            return 0;
-        }
-
-        // LDRSH takes similar cycles to LDR
-        self.add_internal_cycles(1);
-        2
+        self.execute_load_generic(rd, rn, addressing, LoadType::SignedHalfword, mmio)
     }
 
     /// Execute MRS (Move PSR to Register) instruction
@@ -851,13 +819,8 @@ impl ARM7TDMI {
         }
 
         // MUL timing: 1S + mI cycles where m depends on multiplier value
-        // m = 1 if bits [8:31] are all 0 or all 1
-        // m = 2 if bits [16:31] are all 0 or all 1
-        // m = 3 if bits [24:31] are all 0 or all 1
-        // m = 4 otherwise
         let m = calculate_multiply_cycles(rs_val);
         self.add_internal_cycles(m);
-
         1 + m
     }
 
@@ -886,8 +849,17 @@ impl ARM7TDMI {
         // MLA timing: 1S + (m+1)I cycles
         let m = calculate_multiply_cycles(rs_val);
         self.add_internal_cycles(m + 1);
-
         1 + m + 1
+    }
+
+    /// Helper to set flags for 64-bit multiply results
+    #[inline]
+    fn set_flags_for_long_multiply(&mut self, result: u64) {
+        let negative = (result >> 63) == 1;
+        let zero = result == 0;
+        self.registers.set_flag(Flag::Negative, negative);
+        self.registers.set_flag(Flag::Zero, zero);
+        // Carry and Overflow are destroyed (unpredictable)
     }
 
     /// Execute UMULL (Unsigned Multiply Long) instruction
@@ -908,18 +880,12 @@ impl ARM7TDMI {
         self.registers.write_register(rd_hi, (result >> 32) as u32);
 
         if set_flags {
-            // Set flags based on the full 64-bit result
-            let negative = (result >> 63) == 1;
-            let zero = result == 0;
-            self.registers.set_flag(Flag::Negative, negative);
-            self.registers.set_flag(Flag::Zero, zero);
-            // Carry and Overflow are destroyed (unpredictable)
+            self.set_flags_for_long_multiply(result);
         }
 
         // UMULL timing: 1S + (m+1)I cycles
         let m = calculate_multiply_cycles(self.registers.read_register(rs));
         self.add_internal_cycles(m + 1);
-
         1 + m + 1
     }
 
@@ -945,16 +911,12 @@ impl ARM7TDMI {
         self.registers.write_register(rd_hi, (result >> 32) as u32);
 
         if set_flags {
-            let negative = (result >> 63) == 1;
-            let zero = result == 0;
-            self.registers.set_flag(Flag::Negative, negative);
-            self.registers.set_flag(Flag::Zero, zero);
+            self.set_flags_for_long_multiply(result);
         }
 
         // UMLAL timing: 1S + (m+2)I cycles
         let m = calculate_multiply_cycles(self.registers.read_register(rs));
         self.add_internal_cycles(m + 2);
-
         1 + m + 2
     }
 
@@ -976,16 +938,12 @@ impl ARM7TDMI {
         self.registers.write_register(rd_hi, (result >> 32) as u32);
 
         if set_flags {
-            let negative = (result >> 63) == 1;
-            let zero = result == 0;
-            self.registers.set_flag(Flag::Negative, negative);
-            self.registers.set_flag(Flag::Zero, zero);
+            self.set_flags_for_long_multiply(result);
         }
 
         // SMULL timing: 1S + (m+1)I cycles
         let m = calculate_multiply_cycles(self.registers.read_register(rs));
         self.add_internal_cycles(m + 1);
-
         1 + m + 1
     }
 
@@ -1011,16 +969,12 @@ impl ARM7TDMI {
         self.registers.write_register(rd_hi, (result >> 32) as u32);
 
         if set_flags {
-            let negative = (result >> 63) == 1;
-            let zero = result == 0;
-            self.registers.set_flag(Flag::Negative, negative);
-            self.registers.set_flag(Flag::Zero, zero);
+            self.set_flags_for_long_multiply(result);
         }
 
         // SMLAL timing: 1S + (m+2)I cycles
         let m = calculate_multiply_cycles(self.registers.read_register(rs));
         self.add_internal_cycles(m + 2);
-
         1 + m + 2
     }
 
