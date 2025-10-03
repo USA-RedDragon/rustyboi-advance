@@ -98,7 +98,7 @@ impl Gui {
                     *any_menu_open = true;
                     if ui.button("Load ROM").clicked() {
                         let mut dialog = file_dialog::new()
-                            .add_filter("Game Boy ROM", &["gb", "gbc", "zip"])
+                            .add_filter("Game Boy Advance ROM", &["gba", "zip"])
                             .add_filter("All Files", &["*"]);
                         if env::current_dir().is_ok() {
                             dialog = dialog.set_directory(env::current_dir().unwrap());
@@ -121,7 +121,7 @@ impl Gui {
                             .as_secs();
                         let file_name = format!("save_{}", timestamp);
                         let mut dialog = file_dialog::new()
-                            .add_filter("RustyBoi Save State", &["rustyboisave"])
+                            .add_filter("RustyBoi Advance Save State", &["rustyboiadvancesave"])
                             .set_file_name(file_name);
                         if env::current_dir().is_ok() {
                             dialog = dialog.set_directory(env::current_dir().unwrap());
@@ -138,7 +138,7 @@ impl Gui {
                     }
                     if ui.button("Load State").clicked() {
                         let mut dialog = file_dialog::new()
-                            .add_filter("RustyBoi Save State", &["rustyboisave"])
+                            .add_filter("RustyBoi Advance Save State", &["rustyboiadvancesave"])
                             .add_filter("All Files", &["*"]);
                         if env::current_dir().is_ok() {
                             dialog = dialog.set_directory(env::current_dir().unwrap());
