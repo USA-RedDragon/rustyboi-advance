@@ -320,14 +320,24 @@ impl Gui {
                         let is_thumb = regs.get_flag(cpu::registers::Flag::ThumbState);
                         let instruction_length = if is_thumb { 2 } else { 4 }; // Thumb=16bit, ARM=32bit
 
-                        // Use the new structured decoder to get instruction information
-                        let instruction = Disassembler::decode_with_reader(addr, |a| {
-                            let mut word = 0u32;
-                            for i in 0..4 {
-                                word |= (gb_ref.read_memory(a + i) as u32) << (i * 8);
-                            }
-                            word
-                        });
+                        // Use the appropriate decoder based on CPU state
+                        let instruction = if is_thumb {
+                            // Thumb mode: decode 16-bit instruction
+                            Disassembler::decode_thumb_with_reader(addr, |a| {
+                                let byte0 = gb_ref.read_memory(a) as u16;
+                                let byte1 = gb_ref.read_memory(a + 1) as u16;
+                                byte0 | (byte1 << 8)
+                            })
+                        } else {
+                            // ARM mode: decode 32-bit instruction
+                            Disassembler::decode_with_reader(addr, |a| {
+                                let mut word = 0u32;
+                                for i in 0..4 {
+                                    word |= (gb_ref.read_memory(a + i) as u32) << (i * 8);
+                                }
+                                word
+                            })
+                        };
 
                         // Convert to string for display (still backward compatible)
                         let mnemonic = instruction.to_string();

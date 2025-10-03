@@ -194,13 +194,13 @@ impl PerModeRegister {
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
 pub enum Flag {
-    Negative = 0b1000_0000,
-    Zero = 0b0100_0000,
-    Carry = 0b0010_0000,
-    Overflow = 0b0001_0000,
-    IrqDisable = 0b0000_0100,
-    FiqDisable = 0b0000_0010,
-    ThumbState = 0b0000_0001,
+    Negative = 1 << 31,  // Bit 31: N flag
+    Zero = 1 << 30,      // Bit 30: Z flag
+    Carry = 1 << 29,     // Bit 29: C flag
+    Overflow = 1 << 28,  // Bit 28: V flag
+    IrqDisable = 1 << 7, // Bit 7: I bit (IRQ disable)
+    FiqDisable = 1 << 6, // Bit 6: F bit (FIQ disable)
+    ThumbState = 1 << 5, // Bit 5: T bit (Thumb state)
 }
 
 #[derive(Serialize, Deserialize, Clone)]

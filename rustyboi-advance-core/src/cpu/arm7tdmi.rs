@@ -145,9 +145,16 @@ impl ARM7TDMI {
 
     #[inline]
     pub fn step(&mut self, mmio: &mut memory::mmio::Mmio) -> u32 {
+        // Check for interrupts before executing the next instruction
+        // In a real GBA, we would check the interrupt controller here
+        // For now, we'll add a method that can be called externally
+        // TODO: Integrate with interrupt controller when available
+
         // If halted, check if we should exit halt state
         if self.halted {
-            // CPU is halted and no interrupt is pending, consume 1 cycle and return
+            // CPU is halted - check for interrupts
+            // For now, just consume 1 cycle
+            // TODO: Check interrupt flags and exit halt if interrupt pending
             self.add_cycles(CycleType::I, 0);
             return 1;
         }
@@ -221,13 +228,13 @@ impl ARM7TDMI {
     fn advance_pipeline(&mut self, mmio: &mut memory::mmio::Mmio) -> u32 {
         let mut total_cycles = 0;
 
-        // Handle pipeline flush if requested
+        // Handle pipeline flush if requested (before executing anything)
         if self.pipeline.flush_pending {
             self.flush_pipeline();
             // After flush, prime the pipeline from the new PC location
-            self.prime_pipeline(mmio);
-            // Branch + refill takes 2S + 1N cycles
-            return 3;
+            // This will account for actual memory timing based on the target address
+            let refill_cycles = self.prime_pipeline(mmio);
+            return refill_cycles;
         }
 
         // Execute stage - execute the instruction currently in execute stage
@@ -251,6 +258,15 @@ impl ARM7TDMI {
             }
         }
 
+        // Check if instruction execution triggered a pipeline flush
+        // If so, handle it immediately and don't advance the pipeline further
+        if self.pipeline.flush_pending {
+            self.flush_pipeline();
+            // Prime the pipeline and account for actual memory timing
+            let refill_cycles = self.prime_pipeline(mmio);
+            return total_cycles + refill_cycles;
+        }
+
         // Decode -> Execute: Move decoded instruction to execute
         self.pipeline.execute = self.pipeline.decode.take();
 
@@ -259,15 +275,29 @@ impl ARM7TDMI {
 
         // Fetch new instruction
         let pc = self.registers.pc;
-        let (instruction, fetch_cycles) = self.read_memory_timed(mmio, pc);
+        let is_thumb = self.registers.get_flag(registers::Flag::ThumbState);
 
-        // Decode the instruction for structured access (only for ARM mode for now)
-        let decoded_instruction = if !self.registers.get_flag(registers::Flag::ThumbState) {
-            Some(Disassembler::decode_opcode(instruction, pc, |offset| {
+        // Decode the instruction for structured access
+        let (decoded_instruction, fetch_cycles) = if !is_thumb {
+            // ARM mode: read 32-bit instruction
+            let (instruction, cycles) = self.read_memory_timed(mmio, pc);
+            let decoded = Some(Disassembler::decode_opcode(instruction, pc, |offset| {
                 (mmio as &dyn memory::Addressable).read32(pc + offset)
-            }))
+            }));
+            (decoded, cycles)
         } else {
-            None // TODO: Add Thumb instruction decoding
+            // Thumb mode: read 16-bit instruction
+            let (instruction, cycles) = self.read_memory_timed(mmio, pc);
+            let thumb_opcode = (instruction & 0xFFFF) as u16;
+            let decoded = Some(Disassembler::decode_thumb_opcode(
+                thumb_opcode,
+                pc,
+                |offset| {
+                    let word = (mmio as &dyn memory::Addressable).read32(pc + offset);
+                    (word & 0xFFFF) as u16
+                },
+            ));
+            (decoded, cycles)
         };
 
         self.pipeline.fetch = Some(PipelineInstruction {
@@ -289,9 +319,13 @@ impl ARM7TDMI {
 
     /// Initialize the pipeline by filling it with the first few instructions
     /// This should be called after reset or when starting execution
-    pub fn prime_pipeline(&mut self, mmio: &mut memory::mmio::Mmio) {
+    /// Returns the number of cycles used for the pipeline refill
+    pub fn prime_pipeline(&mut self, mmio: &mut memory::mmio::Mmio) -> u32 {
         // Clear any existing pipeline state
         self.flush_pipeline();
+
+        // Track cycles used for pipeline refill
+        let cycles_before = self.cycle_counts.total_cycles;
 
         // Save the current PC since we don't want to advance it during priming
         let original_pc = self.registers.pc;
@@ -310,7 +344,15 @@ impl ARM7TDMI {
                 |offset| (mmio as &dyn memory::Addressable).read32(original_pc + offset),
             ))
         } else {
-            None // TODO: Add Thumb instruction decoding
+            let thumb_opcode = (execute_instr & 0xFFFF) as u16;
+            Some(Disassembler::decode_thumb_opcode(
+                thumb_opcode,
+                original_pc,
+                |offset| {
+                    let word = (mmio as &dyn memory::Addressable).read32(original_pc + offset);
+                    (word & 0xFFFF) as u16
+                },
+            ))
         };
         self.pipeline.execute = Some(PipelineInstruction {
             instruction: execute_decoded,
@@ -328,7 +370,15 @@ impl ARM7TDMI {
                 |offset| (mmio as &dyn memory::Addressable).read32(decode_pc + offset),
             ))
         } else {
-            None // TODO: Add Thumb instruction decoding
+            let thumb_opcode = (decode_instr & 0xFFFF) as u16;
+            Some(Disassembler::decode_thumb_opcode(
+                thumb_opcode,
+                decode_pc,
+                |offset| {
+                    let word = (mmio as &dyn memory::Addressable).read32(decode_pc + offset);
+                    (word & 0xFFFF) as u16
+                },
+            ))
         };
         self.pipeline.decode = Some(PipelineInstruction {
             instruction: decode_decoded,
@@ -346,7 +396,15 @@ impl ARM7TDMI {
                 |offset| (mmio as &dyn memory::Addressable).read32(fetch_pc + offset),
             ))
         } else {
-            None // TODO: Add Thumb instruction decoding
+            let thumb_opcode = (fetch_instr & 0xFFFF) as u16;
+            Some(Disassembler::decode_thumb_opcode(
+                thumb_opcode,
+                fetch_pc,
+                |offset| {
+                    let word = (mmio as &dyn memory::Addressable).read32(fetch_pc + offset);
+                    (word & 0xFFFF) as u16
+                },
+            ))
         };
         self.pipeline.fetch = Some(PipelineInstruction {
             instruction: fetch_decoded,
@@ -357,6 +415,10 @@ impl ARM7TDMI {
         // Update PC to point to the next instruction to be fetched
         // PC should be 12 bytes ahead of execute stage (8 + 4) in ARM mode, or 6 bytes ahead (4 + 2) in Thumb mode
         self.registers.pc = original_pc.wrapping_add(instruction_size * 3);
+
+        // Return the actual cycles used for pipeline refill
+        // This will be 2S + 1N typically, but depends on actual memory timings
+        (self.cycle_counts.total_cycles - cycles_before) as u32
     }
 
     /// Get current pipeline state for debugging
@@ -398,5 +460,147 @@ impl ARM7TDMI {
         self.registers.pc = target_addr;
         self.request_pipeline_flush();
         self.last_access_addr = None; // Next access won't be sequential
+    }
+
+    /// Exception vector addresses
+    const VECTOR_RESET: u32 = 0x00000000;
+    const VECTOR_UNDEFINED: u32 = 0x00000004;
+    const VECTOR_SWI: u32 = 0x00000008;
+    const VECTOR_PREFETCH_ABORT: u32 = 0x0000000C;
+    const VECTOR_DATA_ABORT: u32 = 0x00000010;
+    const VECTOR_IRQ: u32 = 0x00000018;
+    const VECTOR_FIQ: u32 = 0x0000001C;
+
+    /// Enter an exception
+    /// This handles the state saving and mode switching for all exception types
+    #[inline]
+    pub fn enter_exception(
+        &mut self,
+        exception_vector: u32,
+        new_mode: registers::Mode,
+        _disable_irq: bool,
+        disable_fiq: bool,
+    ) {
+        // Save current CPSR to SPSR of the new mode
+        let current_cpsr = self.registers.cpsr;
+        let is_thumb = self.registers.get_flag(registers::Flag::ThumbState);
+
+        // Calculate return address based on exception type and current mode
+        // In ARM mode, PC is 8 ahead; in Thumb mode, PC is 4 ahead
+        let return_addr = match exception_vector {
+            Self::VECTOR_SWI | Self::VECTOR_UNDEFINED => {
+                // Return to the instruction after the SWI/undefined instruction
+                // ARM: PC is at SWI+8, want SWI+4, so PC-4
+                // Thumb: PC is at SWI+4, want SWI+2, so PC-2
+                if is_thumb {
+                    self.registers.pc.wrapping_sub(2)
+                } else {
+                    self.registers.pc.wrapping_sub(4)
+                }
+            }
+            Self::VECTOR_IRQ | Self::VECTOR_FIQ => {
+                // Return to the instruction that was interrupted
+                // The interrupted instruction hasn't executed yet
+                // ARM: PC is 8 ahead of interrupted instruction, so PC-4 to get back to it
+                // Thumb: PC is 4 ahead of interrupted instruction, so PC-2 to get back to it
+                if is_thumb {
+                    self.registers.pc.wrapping_sub(2)
+                } else {
+                    self.registers.pc.wrapping_sub(4)
+                }
+            }
+            Self::VECTOR_PREFETCH_ABORT => {
+                // Return to the instruction that caused the abort
+                // ARM: PC-4
+                // Thumb: PC-2
+                if is_thumb {
+                    self.registers.pc.wrapping_sub(2)
+                } else {
+                    self.registers.pc.wrapping_sub(4)
+                }
+            }
+            Self::VECTOR_DATA_ABORT => {
+                // Return to the instruction that caused the abort + 4
+                // So we can retry it after fixing the fault
+                // ARM: PC is already at faulting+8, so PC gives us faulting+8
+                // Thumb: PC is at faulting+4, so PC gives us faulting+4
+                self.registers.pc
+            }
+            _ => self.registers.pc,
+        };
+
+        // Switch to the new mode
+        let new_cpsr = (current_cpsr & !0x1F) | (new_mode as u32);
+        let mut new_cpsr = new_cpsr | 0x80; // Disable IRQ (I bit)
+        if disable_fiq {
+            new_cpsr |= 0x40; // Disable FIQ (F bit)
+        }
+
+        // Set Thumb bit to 0 (exceptions always execute in ARM mode)
+        new_cpsr &= !(1 << 5);
+
+        self.registers.cpsr = new_cpsr;
+
+        // Now that we're in the new mode, save SPSR and LR
+        self.registers.set_spsr(current_cpsr);
+        self.registers.set_lr(return_addr);
+
+        // Branch to exception vector
+        self.branch_to(exception_vector);
+    }
+
+    /// Software interrupt exception
+    #[inline]
+    pub fn software_interrupt(&mut self) {
+        self.enter_exception(
+            Self::VECTOR_SWI,
+            registers::Mode::Service,
+            true,  // Disable IRQ
+            false, // Don't disable FIQ
+        );
+    }
+
+    /// IRQ exception
+    #[inline]
+    pub fn irq_exception(&mut self) {
+        self.enter_exception(
+            Self::VECTOR_IRQ,
+            registers::Mode::Irq,
+            true,  // Disable IRQ
+            false, // Don't disable FIQ
+        );
+    }
+
+    /// FIQ exception
+    #[inline]
+    pub fn fiq_exception(&mut self) {
+        self.enter_exception(
+            Self::VECTOR_FIQ,
+            registers::Mode::Fiq,
+            true, // Disable IRQ
+            true, // Disable FIQ
+        );
+    }
+
+    /// Check for pending interrupts and handle them
+    /// Returns true if an interrupt was serviced
+    #[inline]
+    pub fn check_interrupts(&mut self, irq_pending: bool, fiq_pending: bool) -> bool {
+        let cpsr = self.registers.cpsr;
+        let irq_disabled = (cpsr & 0x80) != 0; // I bit
+        let fiq_disabled = (cpsr & 0x40) != 0; // F bit
+
+        // FIQ has higher priority than IRQ
+        if fiq_pending && !fiq_disabled {
+            self.fiq_exception();
+            return true;
+        }
+
+        if irq_pending && !irq_disabled {
+            self.irq_exception();
+            return true;
+        }
+
+        false
     }
 }

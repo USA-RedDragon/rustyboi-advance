@@ -1141,7 +1141,7 @@ fn format_register_list(registers: &RegisterList) -> String {
 }
 
 impl Disassembler {
-    /// Returns the mnemonic string for the instruction at the given address
+    /// Returns the mnemonic string for the instruction at the given address (ARM mode)
     pub fn disassemble_with_reader<F>(addr: u32, read_fn: F) -> String
     where
         F: FnMut(u32) -> u32,
@@ -1150,7 +1150,7 @@ impl Disassembler {
         instruction.to_string()
     }
 
-    /// Returns the Instruction struct for the instruction at the given address
+    /// Returns the Instruction struct for the instruction at the given address (ARM mode)
     pub fn decode_with_reader<F>(addr: u32, mut read_fn: F) -> Instruction
     where
         F: FnMut(u32) -> u32,
@@ -1159,12 +1159,39 @@ impl Disassembler {
         Self::decode_opcode(opcode, addr, |offset| read_fn(addr + offset))
     }
 
+    /// Returns the mnemonic string for the instruction at the given address (Thumb mode)
+    pub fn disassemble_thumb_with_reader<F>(addr: u32, read_fn: F) -> String
+    where
+        F: FnMut(u32) -> u16,
+    {
+        let instruction = Self::decode_thumb_with_reader(addr, read_fn);
+        instruction.to_string()
+    }
+
+    /// Returns the Instruction struct for the instruction at the given address (Thumb mode)
+    pub fn decode_thumb_with_reader<F>(addr: u32, mut read_fn: F) -> Instruction
+    where
+        F: FnMut(u32) -> u16,
+    {
+        let opcode = read_fn(addr);
+        Self::decode_thumb_opcode(opcode, addr, |offset| read_fn(addr + offset))
+    }
+
     /// Returns the mnemonic string for the given opcode (backward compatibility)
     pub fn disassemble_opcode<F>(opcode: u32, pc: u32, read_fn: F) -> String
     where
         F: FnMut(u32) -> u32,
     {
         let instruction = Self::decode_opcode(opcode, pc, read_fn);
+        instruction.to_string()
+    }
+
+    /// Returns the mnemonic string for the given Thumb opcode
+    pub fn disassemble_thumb_opcode<F>(opcode: u16, pc: u32, read_fn: F) -> String
+    where
+        F: FnMut(u32) -> u16,
+    {
+        let instruction = Self::decode_thumb_opcode(opcode, pc, read_fn);
         instruction.to_string()
     }
 
@@ -1187,6 +1214,121 @@ impl Disassembler {
             0b110 => Self::decode_group_110(opcode, condition),
             0b111 => Self::decode_group_111(opcode, condition),
             _ => Instruction::Unknown { condition, opcode },
+        }
+    }
+
+    /// Decodes a single Thumb opcode into an Instruction struct
+    #[inline]
+    pub fn decode_thumb_opcode<F>(opcode: u16, pc: u32, mut read_fn: F) -> Instruction
+    where
+        F: FnMut(u32) -> u16,
+    {
+        // Thumb instructions are always unconditional (condition = AL)
+        let condition = Condition::AL;
+
+        // Decode based on top bits of the instruction
+        let bits_15_13 = (opcode >> 13) & 0b111;
+        let bits_15_11 = (opcode >> 11) & 0b11111;
+        let bits_15_12 = (opcode >> 12) & 0b1111;
+        let bits_15_8 = (opcode >> 8) & 0xFF;
+
+        match bits_15_13 {
+            0b000 => {
+                // Check bits 12-11 to distinguish between Format 1 and Format 2
+                if bits_15_11 < 0b00011 {
+                    // Format 1: LSL, LSR, ASR with immediate
+                    Self::decode_thumb_shift_immediate(opcode, condition)
+                } else {
+                    // Format 2: ADD/SUB register/immediate
+                    Self::decode_thumb_add_sub(opcode, condition)
+                }
+            }
+            0b001 => {
+                // Format 3: MOV/CMP/ADD/SUB immediate
+                Self::decode_thumb_immediate(opcode, condition)
+            }
+            0b010 => {
+                match bits_15_12 {
+                    0b0100 => {
+                        if (opcode >> 10) & 0b11 == 0b00 {
+                            Self::decode_thumb_alu(opcode, condition)
+                        } else if bits_15_11 == 0b01001 {
+                            // Format 6: PC-relative load
+                            Self::decode_thumb_pc_relative_load(opcode, pc, condition)
+                        } else {
+                            Self::decode_thumb_hireg_bx(opcode, pc, condition)
+                        }
+                    }
+                    0b0101 => {
+                        // Check if it's Format 8 (sign-extended) or Format 7 (register offset)
+                        if (opcode >> 9) & 1 == 1 {
+                            Self::decode_thumb_load_store_sign_extended(opcode, condition)
+                        } else {
+                            Self::decode_thumb_load_store_reg_offset(opcode, condition)
+                        }
+                    }
+                    0b0110 | 0b0111 => Self::decode_thumb_load_store_word_imm(opcode, condition),
+                    0b1000 | 0b1001 => {
+                        Self::decode_thumb_load_store_halfword_imm(opcode, condition)
+                    }
+                    _ => Instruction::Unknown {
+                        condition,
+                        opcode: opcode as u32,
+                    },
+                }
+            }
+            0b011 => Self::decode_thumb_load_store_word_imm(opcode, condition),
+            0b100 => {
+                if bits_15_12 == 0b1000 || bits_15_12 == 0b1001 {
+                    Self::decode_thumb_load_store_halfword_imm(opcode, condition)
+                } else {
+                    Self::decode_thumb_load_store_stack(opcode, condition)
+                }
+            }
+            0b101 => {
+                if bits_15_12 == 0b1010 || bits_15_12 == 0b1011 {
+                    if bits_15_8 >= 0b10110000 && bits_15_8 < 0b10110100 {
+                        Self::decode_thumb_add_sp_pc(opcode, pc, condition)
+                    } else if bits_15_8 == 0b10110000 {
+                        Self::decode_thumb_adjust_sp(opcode, condition)
+                    } else if bits_15_8 >= 0b10110100 && bits_15_8 < 0b10111000 {
+                        Self::decode_thumb_push_pop(opcode, condition)
+                    } else {
+                        Self::decode_thumb_add_sp_pc(opcode, pc, condition)
+                    }
+                } else {
+                    Self::decode_thumb_load_store_multiple(opcode, condition)
+                }
+            }
+            0b110 => {
+                if bits_15_12 == 0b1100 || bits_15_12 == 0b1101 {
+                    if bits_15_8 < 0b11011111 {
+                        Self::decode_thumb_conditional_branch(opcode, pc, condition)
+                    } else if bits_15_8 == 0b11011111 {
+                        Self::decode_thumb_swi(opcode, condition)
+                    } else {
+                        Self::decode_thumb_load_store_multiple(opcode, condition)
+                    }
+                } else {
+                    Self::decode_thumb_load_store_multiple(opcode, condition)
+                }
+            }
+            0b111 => {
+                if bits_15_12 == 0b1110 {
+                    Self::decode_thumb_unconditional_branch(opcode, pc, condition)
+                } else if bits_15_12 == 0b1111 {
+                    Self::decode_thumb_long_branch_link(opcode, pc, condition, &mut read_fn)
+                } else {
+                    Instruction::Unknown {
+                        condition,
+                        opcode: opcode as u32,
+                    }
+                }
+            }
+            _ => Instruction::Unknown {
+                condition,
+                opcode: opcode as u32,
+            },
         }
     }
 
@@ -1812,13 +1954,38 @@ impl Disassembler {
             } else {
                 // Immediate shift
                 let imm = (opcode >> 7) & 0x1F;
-                if imm == 0 && shift_type == ShiftType::Lsl {
-                    Operand2::Register(Register::from_u32(rm))
-                } else {
-                    Operand2::RegisterShifted {
-                        reg: Register::from_u32(rm),
-                        shift_type,
-                        shift_amount: imm,
+                
+                // Handle special cases when shift amount is 0
+                match shift_type {
+                    ShiftType::Lsl => {
+                        // LSL #0: No shift, just register
+                        if imm == 0 {
+                            Operand2::Register(Register::from_u32(rm))
+                        } else {
+                            Operand2::RegisterShifted {
+                                reg: Register::from_u32(rm),
+                                shift_type,
+                                shift_amount: imm,
+                            }
+                        }
+                    }
+                    ShiftType::Lsr | ShiftType::Asr => {
+                        // LSR #0 means LSR #32, ASR #0 means ASR #32
+                        let actual_shift = if imm == 0 { 32 } else { imm };
+                        Operand2::RegisterShifted {
+                            reg: Register::from_u32(rm),
+                            shift_type,
+                            shift_amount: actual_shift,
+                        }
+                    }
+                    ShiftType::Ror => {
+                        // ROR #0 means RRX (rotate right extended, not implemented as separate type)
+                        // For disassembly purposes, we'll represent it as ROR #0 which is technically RRX
+                        Operand2::RegisterShifted {
+                            reg: Register::from_u32(rm),
+                            shift_type,
+                            shift_amount: imm, // Keep as 0 to indicate RRX in execution
+                        }
                     }
                 }
             }
@@ -1852,6 +2019,688 @@ impl Disassembler {
             Some(abs_addr)
         } else {
             None
+        }
+    }
+
+    // ===== Thumb Instruction Decoders =====
+
+    /// Format 1: Move shifted register (LSL, LSR, ASR)
+    fn decode_thumb_shift_immediate(opcode: u16, condition: Condition) -> Instruction {
+        let op = (opcode >> 11) & 0b11;
+        let offset5 = (opcode >> 6) & 0x1F;
+        let rs = (opcode >> 3) & 0x7;
+        let rd = opcode & 0x7;
+
+        // Only called for op values 0b00, 0b01, 0b10 (LSL, LSR, ASR)
+        // op value 0b11 is handled by decode_thumb_add_sub
+        let shift_type = match op {
+            0b00 => ShiftType::Lsl,
+            0b01 => ShiftType::Lsr,
+            0b10 => ShiftType::Asr,
+            _ => {
+                // This should never happen with correct routing
+                return Instruction::Unknown {
+                    opcode: opcode as u32,
+                    condition,
+                };
+            }
+        };
+
+        let operand2 = if offset5 == 0 && matches!(shift_type, ShiftType::Lsl) {
+            Operand2::Register(Register::from_u32(rs as u32))
+        } else {
+            Operand2::RegisterShifted {
+                reg: Register::from_u32(rs as u32),
+                shift_type,
+                shift_amount: offset5 as u32,
+            }
+        };
+
+        Instruction::DataProcessing {
+            op: DataProcessingOp::Mov,
+            condition,
+            set_flags: true,
+            rn: None,
+            rd: Some(Register::from_u32(rd as u32)),
+            operand2,
+        }
+    }
+
+    /// Format 2: Add/subtract (register or 3-bit immediate)
+    fn decode_thumb_add_sub(opcode: u16, condition: Condition) -> Instruction {
+        let op = (opcode >> 9) & 1;
+        let is_imm = (opcode >> 10) & 1;
+        let rn_or_imm = (opcode >> 6) & 0x7;
+        let rs = (opcode >> 3) & 0x7;
+        let rd = opcode & 0x7;
+
+        let operand2 = if is_imm != 0 {
+            Operand2::Immediate(rn_or_imm as u32)
+        } else {
+            Operand2::Register(Register::from_u32(rn_or_imm as u32))
+        };
+
+        let data_op = if op == 0 {
+            DataProcessingOp::Add
+        } else {
+            DataProcessingOp::Sub
+        };
+
+        Instruction::DataProcessing {
+            op: data_op,
+            condition,
+            set_flags: true,
+            rn: Some(Register::from_u32(rs as u32)),
+            rd: Some(Register::from_u32(rd as u32)),
+            operand2,
+        }
+    }
+
+    /// Format 3: Move/compare/add/subtract immediate (8-bit)
+    fn decode_thumb_immediate(opcode: u16, condition: Condition) -> Instruction {
+        let op = (opcode >> 11) & 0b11;
+        let rd = (opcode >> 8) & 0x7;
+        let imm8 = opcode & 0xFF;
+
+        let (data_op, rn_reg) = match op {
+            0b00 => (DataProcessingOp::Mov, None),
+            0b01 => (DataProcessingOp::Cmp, Some(Register::from_u32(rd as u32))),
+            0b10 => (DataProcessingOp::Add, Some(Register::from_u32(rd as u32))),
+            0b11 => (DataProcessingOp::Sub, Some(Register::from_u32(rd as u32))),
+            _ => unreachable!(),
+        };
+
+        let rd_reg = if matches!(data_op, DataProcessingOp::Cmp) {
+            None
+        } else {
+            Some(Register::from_u32(rd as u32))
+        };
+
+        Instruction::DataProcessing {
+            op: data_op,
+            condition,
+            set_flags: true,
+            rn: rn_reg,
+            rd: rd_reg,
+            operand2: Operand2::Immediate(imm8 as u32),
+        }
+    }
+
+    /// Format 4: ALU operations
+    fn decode_thumb_alu(opcode: u16, condition: Condition) -> Instruction {
+        let alu_op = (opcode >> 6) & 0xF;
+        let rs = (opcode >> 3) & 0x7;
+        let rd = opcode & 0x7;
+
+        // For MUL, return a Mul instruction instead of DataProcessing
+        if alu_op == 0xD {
+            return Instruction::Mul {
+                condition,
+                rd: Register::from_u32(rd as u32),
+                rm: Register::from_u32(rs as u32),
+                rs: Register::from_u32(rd as u32),
+                set_flags: true,
+            };
+        }
+
+        let (data_op, has_rd) = match alu_op {
+            0x0 => (DataProcessingOp::And, true),
+            0x1 => (DataProcessingOp::Eor, true),
+            0x2 => (DataProcessingOp::Mov, true), // LSL (register)
+            0x3 => (DataProcessingOp::Mov, true), // LSR (register)
+            0x4 => (DataProcessingOp::Mov, true), // ASR (register)
+            0x5 => (DataProcessingOp::Adc, true),
+            0x6 => (DataProcessingOp::Sbc, true),
+            0x7 => (DataProcessingOp::Mov, true), // ROR (register)
+            0x8 => (DataProcessingOp::Tst, false),
+            0x9 => (DataProcessingOp::Rsb, true), // NEG
+            0xA => (DataProcessingOp::Cmp, false),
+            0xB => (DataProcessingOp::Cmn, false),
+            0xC => (DataProcessingOp::Orr, true),
+            0xE => (DataProcessingOp::Bic, true),
+            0xF => (DataProcessingOp::Mvn, true),
+            _ => unreachable!(),
+        };
+
+        // Determine operand2 based on operation
+        let operand2 = match alu_op {
+            0x2 => Operand2::RegisterShiftedByRegister {
+                reg: Register::from_u32(rd as u32),
+                shift_type: ShiftType::Lsl,
+                shift_reg: Register::from_u32(rs as u32),
+            },
+            0x3 => Operand2::RegisterShiftedByRegister {
+                reg: Register::from_u32(rd as u32),
+                shift_type: ShiftType::Lsr,
+                shift_reg: Register::from_u32(rs as u32),
+            },
+            0x4 => Operand2::RegisterShiftedByRegister {
+                reg: Register::from_u32(rd as u32),
+                shift_type: ShiftType::Asr,
+                shift_reg: Register::from_u32(rs as u32),
+            },
+            0x7 => Operand2::RegisterShiftedByRegister {
+                reg: Register::from_u32(rd as u32),
+                shift_type: ShiftType::Ror,
+                shift_reg: Register::from_u32(rs as u32),
+            },
+            0x9 => Operand2::Immediate(0), // NEG is RSB Rd, Rs, #0
+            _ => Operand2::Register(Register::from_u32(rs as u32)),
+        };
+
+        let rn_reg = match alu_op {
+            0x9 => Some(Register::from_u32(rs as u32)), // NEG uses rs as source
+            0xF => None,                                // MVN has no rn
+            _ => Some(Register::from_u32(rd as u32)),
+        };
+
+        Instruction::DataProcessing {
+            op: data_op,
+            condition,
+            set_flags: true,
+            rn: rn_reg,
+            rd: if has_rd {
+                Some(Register::from_u32(rd as u32))
+            } else {
+                None
+            },
+            operand2,
+        }
+    }
+
+    /// Format 5: Hi register operations/branch exchange
+    fn decode_thumb_hireg_bx(opcode: u16, _pc: u32, condition: Condition) -> Instruction {
+        let op = (opcode >> 8) & 0b11;
+        let h1 = (opcode >> 7) & 1;
+        let h2 = (opcode >> 6) & 1;
+        let rs_hs = ((opcode >> 3) & 0x7) | ((h2 << 3) as u16);
+        let rd_hd = (opcode & 0x7) | ((h1 << 3) as u16);
+
+        // BX/BLX
+        if op == 0b11 {
+            return Instruction::Bx {
+                condition,
+                rm: Register::from_u32(rs_hs as u32),
+            };
+        }
+
+        let data_op = match op {
+            0b00 => DataProcessingOp::Add,
+            0b01 => DataProcessingOp::Cmp,
+            0b10 => DataProcessingOp::Mov,
+            _ => unreachable!(),
+        };
+
+        let has_rd = !matches!(data_op, DataProcessingOp::Cmp);
+
+        Instruction::DataProcessing {
+            op: data_op,
+            condition,
+            set_flags: false, // Hi register ops don't set flags
+            rn: Some(Register::from_u32(rd_hd as u32)),
+            rd: if has_rd {
+                Some(Register::from_u32(rd_hd as u32))
+            } else {
+                None
+            },
+            operand2: Operand2::Register(Register::from_u32(rs_hs as u32)),
+        }
+    }
+
+    /// Format 6: PC-relative load
+    fn decode_thumb_pc_relative_load(opcode: u16, pc: u32, condition: Condition) -> Instruction {
+        let rd = (opcode >> 8) & 0x7;
+        let imm8 = opcode & 0xFF;
+        let offset = (imm8 as u32) << 2;
+
+        // PC is word-aligned (bits 1-0 are 0) for this calculation
+        let base_pc = (pc + 4) & !3;
+        let target_addr = base_pc.wrapping_add(offset);
+
+        Instruction::Ldr {
+            condition,
+            rd: Register::from_u32(rd as u32),
+            rn: Register::PC,
+            addressing: AddressingMode::Offset {
+                offset: offset as i32,
+                writeback: false,
+            },
+            byte_access: false,
+            target_addr: Some(target_addr),
+        }
+    }
+
+    /// Format 7: Load/store with register offset
+    fn decode_thumb_load_store_reg_offset(opcode: u16, condition: Condition) -> Instruction {
+        let l_bit = (opcode >> 11) & 1;
+        let b_bit = (opcode >> 10) & 1;
+        let ro = (opcode >> 6) & 0x7;
+        let rb = (opcode >> 3) & 0x7;
+        let rd = opcode & 0x7;
+
+        let addressing = AddressingMode::RegisterOffset {
+            reg: Register::from_u32(ro as u32),
+            shift: None,
+            add: true,
+            writeback: false,
+        };
+
+        if l_bit != 0 {
+            Instruction::Ldr {
+                condition,
+                rd: Register::from_u32(rd as u32),
+                rn: Register::from_u32(rb as u32),
+                addressing,
+                byte_access: b_bit != 0,
+                target_addr: None,
+            }
+        } else {
+            Instruction::Str {
+                condition,
+                rd: Register::from_u32(rd as u32),
+                rn: Register::from_u32(rb as u32),
+                addressing,
+                byte_access: b_bit != 0,
+                target_addr: None,
+            }
+        }
+    }
+
+    /// Format 8: Load/store sign-extended byte/halfword
+    fn decode_thumb_load_store_sign_extended(opcode: u16, condition: Condition) -> Instruction {
+        let h_bit = (opcode >> 11) & 1;
+        let s_bit = (opcode >> 10) & 1;
+        let ro = (opcode >> 6) & 0x7;
+        let rb = (opcode >> 3) & 0x7;
+        let rd = opcode & 0x7;
+
+        let addressing = AddressingMode::RegisterOffset {
+            reg: Register::from_u32(ro as u32),
+            shift: None,
+            add: true,
+            writeback: false,
+        };
+
+        match (s_bit, h_bit) {
+            (0, 0) => Instruction::StrH {
+                condition,
+                rd: Register::from_u32(rd as u32),
+                rn: Register::from_u32(rb as u32),
+                addressing,
+            },
+            (0, 1) => Instruction::LdrH {
+                condition,
+                rd: Register::from_u32(rd as u32),
+                rn: Register::from_u32(rb as u32),
+                addressing,
+            },
+            (1, 0) => Instruction::LdrSB {
+                condition,
+                rd: Register::from_u32(rd as u32),
+                rn: Register::from_u32(rb as u32),
+                addressing,
+            },
+            (1, 1) => Instruction::LdrSH {
+                condition,
+                rd: Register::from_u32(rd as u32),
+                rn: Register::from_u32(rb as u32),
+                addressing,
+            },
+            _ => unreachable!(),
+        }
+    }
+
+    /// Format 9: Load/store with immediate offset (word/byte)
+    fn decode_thumb_load_store_word_imm(opcode: u16, condition: Condition) -> Instruction {
+        let b_bit = (opcode >> 12) & 1;
+        let l_bit = (opcode >> 11) & 1;
+        let offset5 = (opcode >> 6) & 0x1F;
+        let rb = (opcode >> 3) & 0x7;
+        let rd = opcode & 0x7;
+
+        let offset = if b_bit != 0 {
+            offset5 as i32 // Byte offset
+        } else {
+            (offset5 as i32) << 2 // Word offset (multiply by 4)
+        };
+
+        let addressing = AddressingMode::Offset {
+            offset,
+            writeback: false,
+        };
+
+        if l_bit != 0 {
+            Instruction::Ldr {
+                condition,
+                rd: Register::from_u32(rd as u32),
+                rn: Register::from_u32(rb as u32),
+                addressing,
+                byte_access: b_bit != 0,
+                target_addr: None,
+            }
+        } else {
+            Instruction::Str {
+                condition,
+                rd: Register::from_u32(rd as u32),
+                rn: Register::from_u32(rb as u32),
+                addressing,
+                byte_access: b_bit != 0,
+                target_addr: None,
+            }
+        }
+    }
+
+    /// Format 10: Load/store halfword with immediate offset
+    fn decode_thumb_load_store_halfword_imm(opcode: u16, condition: Condition) -> Instruction {
+        let l_bit = (opcode >> 11) & 1;
+        let offset5 = (opcode >> 6) & 0x1F;
+        let rb = (opcode >> 3) & 0x7;
+        let rd = opcode & 0x7;
+
+        let offset = (offset5 as i32) << 1; // Halfword offset (multiply by 2)
+
+        let addressing = AddressingMode::Offset {
+            offset,
+            writeback: false,
+        };
+
+        if l_bit != 0 {
+            Instruction::LdrH {
+                condition,
+                rd: Register::from_u32(rd as u32),
+                rn: Register::from_u32(rb as u32),
+                addressing,
+            }
+        } else {
+            Instruction::StrH {
+                condition,
+                rd: Register::from_u32(rd as u32),
+                rn: Register::from_u32(rb as u32),
+                addressing,
+            }
+        }
+    }
+
+    /// Format 11: SP-relative load/store
+    fn decode_thumb_load_store_stack(opcode: u16, condition: Condition) -> Instruction {
+        let l_bit = (opcode >> 11) & 1;
+        let rd = (opcode >> 8) & 0x7;
+        let imm8 = opcode & 0xFF;
+        let offset = (imm8 as i32) << 2; // Word offset
+
+        let addressing = AddressingMode::Offset {
+            offset,
+            writeback: false,
+        };
+
+        if l_bit != 0 {
+            Instruction::Ldr {
+                condition,
+                rd: Register::from_u32(rd as u32),
+                rn: Register::SP,
+                addressing,
+                byte_access: false,
+                target_addr: None,
+            }
+        } else {
+            Instruction::Str {
+                condition,
+                rd: Register::from_u32(rd as u32),
+                rn: Register::SP,
+                addressing,
+                byte_access: false,
+                target_addr: None,
+            }
+        }
+    }
+
+    /// Format 12: Load address (ADD Rd, PC/SP, #imm)
+    fn decode_thumb_add_sp_pc(opcode: u16, pc: u32, condition: Condition) -> Instruction {
+        let sp_bit = (opcode >> 11) & 1;
+        let rd = (opcode >> 8) & 0x7;
+        let imm8 = opcode & 0xFF;
+        let offset = (imm8 as u32) << 2;
+
+        let source_reg = if sp_bit != 0 {
+            Register::SP
+        } else {
+            Register::PC
+        };
+
+        // For PC-relative, calculate target address
+        let target_addr = if sp_bit == 0 {
+            let base_pc = (pc + 4) & !3;
+            Some(base_pc.wrapping_add(offset))
+        } else {
+            None
+        };
+
+        if target_addr.is_some() {
+            Instruction::Adr {
+                condition,
+                rd: Register::from_u32(rd as u32),
+                target: target_addr.unwrap(),
+            }
+        } else {
+            Instruction::DataProcessing {
+                op: DataProcessingOp::Add,
+                condition,
+                set_flags: false,
+                rn: Some(source_reg),
+                rd: Some(Register::from_u32(rd as u32)),
+                operand2: Operand2::Immediate(offset),
+            }
+        }
+    }
+
+    /// Format 13: Add offset to Stack Pointer
+    fn decode_thumb_adjust_sp(opcode: u16, condition: Condition) -> Instruction {
+        let s_bit = (opcode >> 7) & 1;
+        let imm7 = opcode & 0x7F;
+        let offset = (imm7 as u32) << 2;
+
+        let op = if s_bit != 0 {
+            DataProcessingOp::Sub
+        } else {
+            DataProcessingOp::Add
+        };
+
+        Instruction::DataProcessing {
+            op,
+            condition,
+            set_flags: false,
+            rn: Some(Register::SP),
+            rd: Some(Register::SP),
+            operand2: Operand2::Immediate(offset),
+        }
+    }
+
+    /// Format 14: Push/pop registers
+    fn decode_thumb_push_pop(opcode: u16, condition: Condition) -> Instruction {
+        let l_bit = (opcode >> 11) & 1;
+        let r_bit = (opcode >> 8) & 1;
+        let rlist = opcode & 0xFF;
+
+        let mut register_mask = rlist as u16;
+
+        // Add PC (for POP) or LR (for PUSH) if R bit is set
+        if r_bit != 0 {
+            if l_bit != 0 {
+                register_mask |= 1 << 15; // PC
+            } else {
+                register_mask |= 1 << 14; // LR
+            }
+        }
+
+        let registers = RegisterList::from_mask(register_mask);
+
+        // PUSH is STMDB (decrement before), POP is LDMIA (increment after)
+        if l_bit != 0 {
+            Instruction::Ldm {
+                condition,
+                rn: Register::SP,
+                registers,
+                addressing_mode: AddressingModeType::IA,
+                writeback: true,
+                user_mode: false,
+            }
+        } else {
+            Instruction::Stm {
+                condition,
+                rn: Register::SP,
+                registers,
+                addressing_mode: AddressingModeType::DB,
+                writeback: true,
+                user_mode: false,
+            }
+        }
+    }
+
+    /// Format 15: Multiple load/store
+    fn decode_thumb_load_store_multiple(opcode: u16, condition: Condition) -> Instruction {
+        let l_bit = (opcode >> 11) & 1;
+        let rb = (opcode >> 8) & 0x7;
+        let rlist = opcode & 0xFF;
+
+        let registers = RegisterList::from_mask(rlist as u16);
+
+        if l_bit != 0 {
+            Instruction::Ldm {
+                condition,
+                rn: Register::from_u32(rb as u32),
+                registers,
+                addressing_mode: AddressingModeType::IA,
+                writeback: true,
+                user_mode: false,
+            }
+        } else {
+            Instruction::Stm {
+                condition,
+                rn: Register::from_u32(rb as u32),
+                registers,
+                addressing_mode: AddressingModeType::IA,
+                writeback: true,
+                user_mode: false,
+            }
+        }
+    }
+
+    /// Format 16: Conditional branch
+    fn decode_thumb_conditional_branch(opcode: u16, pc: u32, _condition: Condition) -> Instruction {
+        let cond = (opcode >> 8) & 0xF;
+        let offset8 = opcode & 0xFF;
+
+        // Sign extend 8-bit offset to 32-bit
+        let offset = if (offset8 & 0x80) != 0 {
+            (offset8 as i32) | 0xFFFFFF00u32 as i32
+        } else {
+            offset8 as i32
+        };
+
+        let target = (pc as i32 + 4 + (offset << 1)) as u32;
+
+        Instruction::B {
+            condition: Condition::from_bits(cond as u32),
+            target,
+        }
+    }
+
+    /// Format 17: Software Interrupt
+    fn decode_thumb_swi(opcode: u16, condition: Condition) -> Instruction {
+        let comment = (opcode & 0xFF) as u32;
+        Instruction::Swi { condition, comment }
+    }
+
+    /// Format 18: Unconditional branch
+    fn decode_thumb_unconditional_branch(
+        opcode: u16,
+        pc: u32,
+        condition: Condition,
+    ) -> Instruction {
+        let offset11 = opcode & 0x7FF;
+
+        // Sign extend 11-bit offset to 32-bit
+        let offset = if (offset11 & 0x400) != 0 {
+            (offset11 as i32) | 0xFFFFF800u32 as i32
+        } else {
+            offset11 as i32
+        };
+
+        let target = (pc as i32 + 4 + (offset << 1)) as u32;
+
+        Instruction::B { condition, target }
+    }
+
+    /// Format 19: Long branch with link
+    /// Thumb BL is a 32-bit instruction split into two 16-bit parts:
+    /// First half (H=0): Sets up high bits in LR
+    /// Second half (H=1): Completes branch using LR + low bits
+    fn decode_thumb_long_branch_link<F>(
+        opcode: u16,
+        pc: u32,
+        condition: Condition,
+        read_fn: &mut F,
+    ) -> Instruction
+    where
+        F: FnMut(u32) -> u16,
+    {
+        let h_bit = (opcode >> 11) & 1;
+        let offset11 = opcode & 0x7FF;
+
+        if h_bit == 0 {
+            // First half: This is just setup, not a complete instruction
+            // Sign extend the 11-bit value to 23 bits (shifted left by 12)
+            let offset_high = if (offset11 & 0x400) != 0 {
+                // Sign extend by setting upper bits
+                (offset11 as i32 | 0xFFFFF800u32 as i32) << 12
+            } else {
+                (offset11 as i32) << 12
+            };
+            
+            // Store intermediate value - for disassembly we can show this as a pseudo-op
+            let lr_value = (pc as i32).wrapping_add(4).wrapping_add(offset_high) as u32;
+            
+            // Represent as a pseudo-instruction
+            Instruction::DataProcessing {
+                op: DataProcessingOp::Mov,
+                condition,
+                set_flags: false,
+                rn: None,
+                rd: Some(Register::LR),
+                operand2: Operand2::Immediate(lr_value & 0xFFC00000), // High 11 bits
+            }
+        } else {
+            // Second half: Complete the BL instruction
+            // We need to read the previous instruction to get the full offset
+            let prev_opcode = read_fn(pc.wrapping_sub(2));
+            
+            // Check if previous instruction was BL first half
+            if (prev_opcode >> 11) == 0b11110 {
+                // Extract offsets from both halves
+                let offset_high = prev_opcode & 0x7FF;
+                let offset_low = offset11;
+                
+                // Sign extend the 11-bit high value to 23 bits
+                let sign_extended_high = if (offset_high & 0x400) != 0 {
+                    (offset_high as i32 | 0xFFFFF800u32 as i32) << 12
+                } else {
+                    (offset_high as i32) << 12
+                };
+                
+                // Combine: offset = sign_extend(offset_high:offset_low:0)
+                let offset = sign_extended_high | ((offset_low as i32) << 1);
+                
+                // Target address is PC + 4 + offset (PC already points to this instruction + 4)
+                let target = (pc as i32).wrapping_add(4).wrapping_add(offset) as u32;
+                
+                Instruction::Bl { condition, target }
+            } else {
+                // Invalid: second half without first half
+                Instruction::Unknown {
+                    condition,
+                    opcode: opcode as u32,
+                }
+            }
         }
     }
 }
