@@ -143,6 +143,7 @@ impl ARM7TDMI {
         }
     }
 
+    #[inline]
     pub fn step(&mut self, mmio: &mut memory::mmio::Mmio) -> u32 {
         // If halted, check if we should exit halt state
         if self.halted {
@@ -160,12 +161,7 @@ impl ARM7TDMI {
         self.advance_pipeline(mmio)
     }
 
-    fn execute(&mut self, instruction: Instruction, _mmio: &mut memory::mmio::Mmio) -> u32 {
-        {
-            unimplemented!("Unimplemented ARM opcode: {}", instruction.to_string());
-        }
-    }
-
+    #[inline]
     /// Flush the pipeline (used during branches, exceptions, etc.)
     pub fn flush_pipeline(&mut self) {
         self.pipeline.fetch = None;
@@ -175,10 +171,12 @@ impl ARM7TDMI {
     }
 
     /// Mark pipeline for flush on next cycle
+    #[inline]
     pub fn request_pipeline_flush(&mut self) {
         self.pipeline.flush_pending = true;
     }
 
+    #[inline]
     /// Check if the next memory access would be sequential
     fn is_sequential_access(&self, addr: u32) -> bool {
         if let Some(last_addr) = self.last_access_addr {
@@ -191,6 +189,7 @@ impl ARM7TDMI {
         }
     }
 
+    #[inline]
     /// Update cycle counts based on cycle type and wait states
     fn add_cycles(&mut self, cycle_type: CycleType, wait_states: u32) {
         let total_cycles = 1 + wait_states; // Base cycle + wait states
@@ -204,6 +203,7 @@ impl ARM7TDMI {
         }
     }
 
+    #[inline]
     /// Perform a memory read with proper timing calculation
     fn read_memory_timed(&mut self, mmio: &mut memory::mmio::Mmio, addr: u32) -> (u32, u32) {
         let is_sequential = self.is_sequential_access(addr);
@@ -216,6 +216,7 @@ impl ARM7TDMI {
         (value, 1 + timing.wait_states)
     }
 
+    #[inline]
     /// Advance the pipeline by one stage
     fn advance_pipeline(&mut self, mmio: &mut memory::mmio::Mmio) -> u32 {
         let mut total_cycles = 0;
@@ -223,18 +224,31 @@ impl ARM7TDMI {
         // Handle pipeline flush if requested
         if self.pipeline.flush_pending {
             self.flush_pipeline();
-            return 0; // Flush takes no additional cycles, but refill will
+            // After flush, prime the pipeline from the new PC location
+            self.prime_pipeline(mmio);
+            // Branch + refill takes 2S + 1N cycles
+            return 3;
         }
 
         // Execute stage - execute the instruction currently in execute stage
         if let Some(execute_instr) = self.pipeline.execute.take() {
-            total_cycles += self.execute(
-                execute_instr
-                    .instruction
-                    .expect("No instruction in execute stage"),
-                mmio,
-            );
-            self.cycle_counts.instructions_executed += 1;
+            if let Some(instruction) = execute_instr.instruction {
+                total_cycles += self.dispatch_instruction(&instruction, mmio);
+                self.cycle_counts.instructions_executed += 1;
+            } else {
+                // No decoded instruction - likely Thumb mode which is not yet implemented
+                if execute_instr.is_thumb {
+                    panic!(
+                        "Attempted to execute Thumb instruction at PC={:#010X}, but Thumb mode is not yet implemented",
+                        execute_instr.pc
+                    );
+                } else {
+                    panic!(
+                        "No instruction decoded in execute stage at PC={:#010X}",
+                        execute_instr.pc
+                    );
+                }
+            }
         }
 
         // Decode -> Execute: Move decoded instruction to execute
@@ -339,6 +353,10 @@ impl ARM7TDMI {
             pc: fetch_pc,
             is_thumb,
         });
+
+        // Update PC to point to the next instruction to be fetched
+        // PC should be 12 bytes ahead of execute stage (8 + 4) in ARM mode, or 6 bytes ahead (4 + 2) in Thumb mode
+        self.registers.pc = original_pc.wrapping_add(instruction_size * 3);
     }
 
     /// Get current pipeline state for debugging
@@ -357,21 +375,25 @@ impl ARM7TDMI {
     }
 
     /// Reset cycle counts
+    #[inline]
     pub fn reset_cycle_counts(&mut self) {
         self.cycle_counts = CycleCounts::default();
     }
 
     /// Configure wait states (e.g., from WAITCNT register)
+    #[inline]
     pub fn configure_wait_states(&mut self, config: WaitStateConfig) {
         self.wait_config = config;
     }
 
     /// Add internal cycles (for instructions that do internal processing)
+    #[inline]
     pub fn add_internal_cycles(&mut self, count: u32) {
         self.add_cycles(CycleType::I, count.saturating_sub(1)); // subtract 1 because add_cycles adds 1 base
     }
 
     /// Handle branch instruction - flushes pipeline and updates PC
+    #[inline]
     pub fn branch_to(&mut self, target_addr: u32) {
         self.registers.pc = target_addr;
         self.request_pipeline_flush();
