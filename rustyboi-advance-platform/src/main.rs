@@ -9,7 +9,6 @@ mod input;
 mod run;
 mod world;
 
-
 fn main() {
     pollster::block_on(run::run());
 }

@@ -22,6 +22,10 @@ pub struct RawConfig {
     /// Skip BIOS on startup
     #[arg(long, default_value_t = false)]
     skip_bios: bool,
+
+    /// Start the emulator in paused state
+    #[arg(long, default_value_t = false)]
+    start_paused: bool,
 }
 
 #[derive(Clone)]
@@ -38,6 +42,8 @@ pub struct CleanConfig {
     #[cfg(not(target_arch = "wasm32"))]
     // skip BIOS on startup
     pub skip_bios: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub start_paused: bool,
 }
 
 impl RawConfig {
@@ -58,6 +64,8 @@ impl RawConfig {
             scale: self.scale,
             #[cfg(not(target_arch = "wasm32"))]
             skip_bios: _skip_bios,
+            #[cfg(not(target_arch = "wasm32"))]
+            start_paused: self.start_paused,
         }
     }
 }

@@ -16,15 +16,13 @@ impl Gui {
         if let Some(regs) = registers
             && let Some(gb_ref) = gb
         {
-            egui::Window::new("ARM7TDMI Registers")
+            egui::Window::new("ARM7TDMI CPU Debug")
                 .default_pos([10.0, 50.0])
-                .default_size([320.0, 500.0])
+                .default_size([400.0, 650.0])
                 .collapsible(true)
-                .resizable(false)
+                .resizable(true)
                 .frame(egui::Frame::window(&ctx.style()).fill(crate::ui::PANEL_BACKGROUND))
                 .show(ctx, |ui| {
-                    ui.set_width(280.0);
-
                     // ARM7TDMI General Purpose Registers (R0-R12)
                     ui.small(
                         egui::RichText::new("General Registers:").color(egui::Color32::LIGHT_GRAY),
@@ -165,9 +163,146 @@ impl Gui {
                     });
                     ui.separator();
                     ui.monospace(
-                        egui::RichText::new(format!("PC: {:08X}", regs.pc.saturating_sub(4))) // ARM instructions are 4 bytes
+                        egui::RichText::new(format!("PC: {:08X}", regs.pc)) // ARM instructions are 4 bytes
                             .color(egui::Color32::WHITE),
                     );
+                    ui.separator();
+
+                    // Pipeline State
+                    ui.small(
+                        egui::RichText::new("3-Stage Pipeline:").color(egui::Color32::LIGHT_GRAY),
+                    );
+                    let cpu = gb_ref.get_cpu();
+                    let (fetch, decode, execute) = cpu.get_pipeline_state();
+
+                    // Fetch stage
+                    if let Some(fetch_instr) = fetch {
+                        let mnemonic = if let Some(decoded) = &fetch_instr.instruction {
+                            decoded.to_string()
+                        } else {
+                            "No instruction".to_string()
+                        };
+                        ui.monospace(
+                            egui::RichText::new(format!(
+                                "F: {:08X} ({})",
+                                fetch_instr.pc, mnemonic
+                            ))
+                            .color(egui::Color32::LIGHT_GREEN),
+                        );
+                    } else {
+                        ui.monospace(egui::RichText::new("F: Empty").color(egui::Color32::GRAY));
+                    }
+
+                    // Decode stage
+                    if let Some(decode_instr) = decode {
+                        let mnemonic = if let Some(decoded) = &decode_instr.instruction {
+                            decoded.to_string()
+                        } else {
+                            "No instruction".to_string()
+                        };
+                        ui.monospace(
+                            egui::RichText::new(format!(
+                                "D: {:08X} ({})",
+                                decode_instr.pc, mnemonic
+                            ))
+                            .color(egui::Color32::LIGHT_BLUE),
+                        );
+                    } else {
+                        ui.monospace(egui::RichText::new("D: Empty").color(egui::Color32::GRAY));
+                    }
+
+                    // Execute stage
+                    if let Some(execute_instr) = execute {
+                        let mnemonic = if let Some(decoded) = &execute_instr.instruction {
+                            decoded.to_string()
+                        } else {
+                            "No instruction".to_string()
+                        };
+                        ui.monospace(
+                            egui::RichText::new(format!(
+                                "E: {:08X} ({})",
+                                execute_instr.pc, mnemonic
+                            ))
+                            .color(egui::Color32::YELLOW),
+                        );
+                    } else {
+                        ui.monospace(egui::RichText::new("E: Empty").color(egui::Color32::GRAY));
+                    }
+
+                    if cpu.pipeline.flush_pending {
+                        ui.monospace(
+                            egui::RichText::new("⚠ Pipeline Flush Pending")
+                                .color(egui::Color32::RED),
+                        );
+                    }
+                    ui.separator();
+
+                    // Cycle Counts
+                    ui.small(egui::RichText::new("Cycle Counts:").color(egui::Color32::LIGHT_GRAY));
+                    let cycle_counts = &cpu.cycle_counts;
+
+                    ui.monospace(
+                        egui::RichText::new(format!("Total: {}", cycle_counts.total_cycles))
+                            .color(egui::Color32::WHITE),
+                    );
+
+                    ui.monospace(
+                        egui::RichText::new(format!(
+                            "Instructions: {}",
+                            cycle_counts.instructions_executed
+                        ))
+                        .color(egui::Color32::LIGHT_BLUE),
+                    );
+
+                    // Show cycle breakdown
+                    ui.horizontal(|ui| {
+                        ui.monospace(
+                            egui::RichText::new(format!("N: {}", cycle_counts.n_cycles))
+                                .color(egui::Color32::LIGHT_GREEN),
+                        );
+                        ui.monospace(
+                            egui::RichText::new(format!("S: {}", cycle_counts.s_cycles))
+                                .color(egui::Color32::LIGHT_BLUE),
+                        );
+                        ui.monospace(
+                            egui::RichText::new(format!("I: {}", cycle_counts.i_cycles))
+                                .color(egui::Color32::YELLOW),
+                        );
+                    });
+
+                    // Show cycle percentages if there are any cycles
+                    if cycle_counts.total_cycles > 0 {
+                        let total = cycle_counts.total_cycles as f64;
+                        let n_percent = (cycle_counts.n_cycles as f64 / total) * 100.0;
+                        let s_percent = (cycle_counts.s_cycles as f64 / total) * 100.0;
+                        let i_percent = (cycle_counts.i_cycles as f64 / total) * 100.0;
+
+                        ui.horizontal(|ui| {
+                            ui.monospace(
+                                egui::RichText::new(format!("{:.1}%", n_percent))
+                                    .color(egui::Color32::LIGHT_GREEN),
+                            );
+                            ui.monospace(
+                                egui::RichText::new(format!("{:.1}%", s_percent))
+                                    .color(egui::Color32::LIGHT_BLUE),
+                            );
+                            ui.monospace(
+                                egui::RichText::new(format!("{:.1}%", i_percent))
+                                    .color(egui::Color32::YELLOW),
+                            );
+                        });
+
+                        // Show average cycles per instruction
+                        if cycle_counts.instructions_executed > 0 {
+                            let avg_cycles = cycle_counts.total_cycles as f64
+                                / cycle_counts.instructions_executed as f64;
+                            ui.monospace(
+                                egui::RichText::new(format!("Avg: {:.2} cycles/instr", avg_cycles))
+                                    .color(egui::Color32::LIGHT_GRAY),
+                            );
+                        }
+                    }
+
                     ui.separator();
 
                     // Instruction viewer around PC
@@ -185,13 +320,17 @@ impl Gui {
                         let is_thumb = regs.get_flag(cpu::registers::Flag::ThumbState);
                         let instruction_length = if is_thumb { 2 } else { 4 }; // Thumb=16bit, ARM=32bit
 
-                        let (mnemonic, _) = Disassembler::disassemble_with_reader(addr, |a| {
+                        // Use the new structured decoder to get instruction information
+                        let instruction = Disassembler::decode_with_reader(addr, |a| {
                             let mut word = 0u32;
                             for i in 0..4 {
                                 word |= (gb_ref.read_memory(a + i) as u32) << (i * 8);
                             }
                             word
                         });
+
+                        // Convert to string for display (still backward compatible)
+                        let mnemonic = instruction.to_string();
 
                         let color = if addr == display_pc {
                             egui::Color32::YELLOW // Highlight the instruction that was just executed
@@ -316,6 +455,14 @@ impl Gui {
                     );
                     ui.small(
                         egui::RichText::new("I=IRQ Disable F=FIQ Disable T=Thumb Mode")
+                            .color(egui::Color32::LIGHT_GRAY),
+                    );
+                    ui.small(
+                        egui::RichText::new("Pipeline: F=Fetch D=Decode E=Execute")
+                            .color(egui::Color32::LIGHT_GRAY),
+                    );
+                    ui.small(
+                        egui::RichText::new("Cycles: N=Normal S=Sequential I=Internal")
                             .color(egui::Color32::LIGHT_GRAY),
                     );
                 });

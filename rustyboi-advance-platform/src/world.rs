@@ -35,25 +35,27 @@ pub struct World {
 impl World {
     #[cfg(target_arch = "wasm32")]
     pub fn new(gb: gba::GBA, config: Option<config::CleanConfig>) -> Self {
-        let (rom_path, bios_path) = if let Some(cfg) = config {
-            (cfg.rom, cfg.bios)
+        let (rom_path, bios_path, start_paused) = if let Some(cfg) = config {
+            (cfg.rom, cfg.bios, false) // WASM doesn't support start_paused config
         } else {
-            (None, None)
+            (None, None, false)
         };
 
-        Self::new_with_paths(gb, rom_path, bios_path)
+        Self::new_with_paths(gb, rom_path, bios_path, start_paused)
     }
 
     pub fn new_with_paths(
         gb: gba::GBA,
         rom_path: Option<String>,
         bios_path: Option<String>,
+        start_paused: bool,
     ) -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         let now = Instant::now();
 
         // Check if both ROM and BIOS are missing - if so, start paused
-        let should_start_paused = !gb.has_rom() && !gb.has_bios();
+        // Also respect the user's start_paused config option
+        let should_start_paused = start_paused || (!gb.has_rom() && !gb.has_bios());
 
         Self {
             gb,

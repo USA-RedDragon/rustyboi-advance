@@ -1,3 +1,4 @@
+use rustyboi_advance_debugger_lib::Register;
 use serde::{Deserialize, Serialize};
 
 /// A smart accessor for per-mode registers that acts like a u32
@@ -317,6 +318,14 @@ impl Registers {
         self.sp.abt = value;
     }
 
+    pub fn set_spsr_all_modes(&mut self, value: u32) {
+        self.spsr.fiq = value;
+        self.spsr.irq = value;
+        self.spsr.svc = value;
+        self.spsr.und = value;
+        self.spsr.abt = value;
+    }
+
     /// Get the current link register value
     pub fn get_lr(&self) -> u32 {
         self.lr.read_current(self.cpsr)
@@ -350,5 +359,109 @@ impl Registers {
     /// Get a smart accessor for SPSR that acts like a u32
     pub fn spsr(&self) -> CurrentModeRegisterAccess {
         CurrentModeRegisterAccess::new(&self.spsr, self.cpsr)
+    }
+
+    /// Read a register value using the Register enum
+    pub fn read_register(&self, reg: Register) -> u32 {
+        match reg {
+            Register::R0 => self.r0,
+            Register::R1 => self.r1,
+            Register::R2 => self.r2,
+            Register::R3 => self.r3,
+            Register::R4 => self.r4,
+            Register::R5 => self.r5,
+            Register::R6 => self.r6,
+            Register::R7 => self.r7,
+            Register::R8 => {
+                if self.get_current_mode() == Mode::Fiq {
+                    self.r8_fiq
+                } else {
+                    self.r8
+                }
+            }
+            Register::R9 => {
+                if self.get_current_mode() == Mode::Fiq {
+                    self.r9_fiq
+                } else {
+                    self.r9
+                }
+            }
+            Register::R10 => {
+                if self.get_current_mode() == Mode::Fiq {
+                    self.r10_fiq
+                } else {
+                    self.r10
+                }
+            }
+            Register::R11 => {
+                if self.get_current_mode() == Mode::Fiq {
+                    self.r11_fiq
+                } else {
+                    self.r11
+                }
+            }
+            Register::R12 => {
+                if self.get_current_mode() == Mode::Fiq {
+                    self.r12_fiq
+                } else {
+                    self.r12
+                }
+            }
+            Register::SP => self.get_sp(),
+            Register::LR => self.get_lr(),
+            Register::PC => self.pc,
+        }
+    }
+
+    /// Write a register value using the Register enum
+    pub fn write_register(&mut self, reg: Register, value: u32) {
+        match reg {
+            Register::R0 => self.r0 = value,
+            Register::R1 => self.r1 = value,
+            Register::R2 => self.r2 = value,
+            Register::R3 => self.r3 = value,
+            Register::R4 => self.r4 = value,
+            Register::R5 => self.r5 = value,
+            Register::R6 => self.r6 = value,
+            Register::R7 => self.r7 = value,
+            Register::R8 => {
+                if self.get_current_mode() == Mode::Fiq {
+                    self.r8_fiq = value;
+                } else {
+                    self.r8 = value;
+                }
+            }
+            Register::R9 => {
+                if self.get_current_mode() == Mode::Fiq {
+                    self.r9_fiq = value;
+                } else {
+                    self.r9 = value;
+                }
+            }
+            Register::R10 => {
+                if self.get_current_mode() == Mode::Fiq {
+                    self.r10_fiq = value;
+                } else {
+                    self.r10 = value;
+                }
+            }
+            Register::R11 => {
+                if self.get_current_mode() == Mode::Fiq {
+                    self.r11_fiq = value;
+                } else {
+                    self.r11 = value;
+                }
+            }
+            Register::R12 => {
+                if self.get_current_mode() == Mode::Fiq {
+                    self.r12_fiq = value;
+                } else {
+                    self.r12 = value;
+                }
+            }
+            Register::SP => self.set_sp(value),
+            Register::LR => self.set_lr(value),
+            Register::PC => self.pc = value,
+        }
     }
 }

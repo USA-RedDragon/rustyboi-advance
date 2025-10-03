@@ -43,7 +43,12 @@ impl GBA {
         self.skip_bios = true;
         self.cpu.registers.pc = 0x08000000;
         self.cpu.registers.set_sp_all_modes(0x03007F00);
-        self.cpu.registers.cpsr = 0x6000001F;
+        self.cpu.registers.cpsr = 0x00000013;
+        self.cpu.registers.set_spsr_all_modes(0x00000013);
+        self.cpu.registers.spsr.svc = 0x0000001F;
+
+        // Prime the pipeline since we're jumping directly to ROM execution
+        self.cpu.prime_pipeline(&mut self.mmio);
     }
 
     pub fn insert(&mut self, cartridge: cartridge::Cartridge) {
@@ -118,6 +123,10 @@ impl GBA {
 
     pub fn get_cpu_registers(&self) -> &cpu::registers::Registers {
         &self.cpu.registers
+    }
+
+    pub fn get_cpu(&self) -> &cpu::ARM7TDMI {
+        &self.cpu
     }
 
     pub fn read_memory(&self, address: u32) -> u8 {

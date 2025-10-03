@@ -95,7 +95,12 @@ impl App {
         let instance = egui_wgpu::wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
 
         // Create World instance
-        let world = world::World::new_with_paths(gb, config.rom.clone(), config.bios.clone());
+        let world = world::World::new_with_paths(
+            gb,
+            config.rom.clone(),
+            config.bios.clone(),
+            config.start_paused,
+        );
         let should_start_paused = world.is_paused;
 
         Self {
@@ -179,20 +184,23 @@ impl App {
     }
 
     fn handle_resized(&mut self, width: u32, height: u32) {
-        if width > 0 && height > 0
-            && let Some(state) = self.state.as_mut() {
-                state.resize_surface(width, height);
-            }
+        if width > 0
+            && height > 0
+            && let Some(state) = self.state.as_mut()
+        {
+            state.resize_surface(width, height);
+        }
     }
 
     fn handle_redraw(&mut self) {
         // Attempt to handle minimizing window
         if let Some(window) = self.window.as_ref()
             && let Some(min) = window.is_minimized()
-                && min {
-                    println!("Window is minimized");
-                    return;
-                }
+            && min
+        {
+            println!("Window is minimized");
+            return;
+        }
 
         // For WASM, check if async initialization is complete
         #[cfg(target_arch = "wasm32")]
@@ -325,43 +333,42 @@ impl App {
 
                     // Only render Game Boy screen if we have both a texture AND have rendered at least one frame
                     if let Some(texture_handle) = &self.texture_handle
-                        && self.gameboy_has_rendered_frame {
-                            egui::CentralPanel::default()
-                                .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
-                                .show(state.egui_renderer.context(), |ui| {
-                                    // Get available space and calculate scale to fit
-                                    let available_rect = ui.available_rect_before_wrap();
-                                    let config_scale =
-                                        self.config.as_ref().map(|c| c.scale as f32).unwrap_or(5.0);
+                        && self.gameboy_has_rendered_frame
+                    {
+                        egui::CentralPanel::default()
+                            .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
+                            .show(state.egui_renderer.context(), |ui| {
+                                // Get available space and calculate scale to fit
+                                let available_rect = ui.available_rect_before_wrap();
+                                let config_scale =
+                                    self.config.as_ref().map(|c| c.scale as f32).unwrap_or(5.0);
 
-                                    // Calculate ideal size based on config scale
-                                    let ideal_width = WIDTH as f32 * config_scale;
-                                    let ideal_height = HEIGHT as f32 * config_scale;
+                                // Calculate ideal size based on config scale
+                                let ideal_width = WIDTH as f32 * config_scale;
+                                let ideal_height = HEIGHT as f32 * config_scale;
 
-                                    // Scale down if needed to fit in available space, but keep aspect ratio
-                                    let scale_x = available_rect.width() / ideal_width;
-                                    let scale_y = available_rect.height() / ideal_height;
-                                    let final_scale = scale_x.min(scale_y).min(1.0) * config_scale;
+                                // Scale down if needed to fit in available space, but keep aspect ratio
+                                let scale_x = available_rect.width() / ideal_width;
+                                let scale_y = available_rect.height() / ideal_height;
+                                let final_scale = scale_x.min(scale_y).min(1.0) * config_scale;
 
-                                    let final_size = egui::Vec2::new(
-                                        WIDTH as f32 * final_scale,
-                                        HEIGHT as f32 * final_scale,
-                                    );
+                                let final_size = egui::Vec2::new(
+                                    WIDTH as f32 * final_scale,
+                                    HEIGHT as f32 * final_scale,
+                                );
 
-                                    ui.with_layout(
-                                        egui::Layout::centered_and_justified(
-                                            egui::Direction::TopDown,
-                                        ),
-                                        |ui| {
-                                            ui.add_sized(
-                                                final_size,
-                                                egui::Image::new(texture_handle)
-                                                    .fit_to_exact_size(final_size),
-                                            );
-                                        },
-                                    );
-                                });
-                        }
+                                ui.with_layout(
+                                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                                    |ui| {
+                                        ui.add_sized(
+                                            final_size,
+                                            egui::Image::new(texture_handle)
+                                                .fit_to_exact_size(final_size),
+                                        );
+                                    },
+                                );
+                            });
+                    }
                 }
                 (gui_action, any_menu_open)
             } else {
@@ -563,38 +570,39 @@ impl App {
             // Handle F key for frame stepping with debounce
             if input.key_pressed(KeyCode::KeyF) {
                 if let Some(world) = &mut self.world
-                    && (self.manually_paused || world.error_state.is_some()) {
-                        // Initial press - execute immediately
-                        world.step_single_frame = true;
-                        let now = Instant::now();
-                        self.f_key_press_time = Some(now);
-                        self.f_last_repeat_time = Some(now);
-                        self.f_key_processed_initial = true;
-                        if let Some(window) = &self.window {
-                            window.request_redraw();
-                        }
+                    && (self.manually_paused || world.error_state.is_some())
+                {
+                    // Initial press - execute immediately
+                    world.step_single_frame = true;
+                    let now = Instant::now();
+                    self.f_key_press_time = Some(now);
+                    self.f_last_repeat_time = Some(now);
+                    self.f_key_processed_initial = true;
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
                     }
+                }
             } else if input.key_held(KeyCode::KeyF) {
                 if let Some(world) = &mut self.world
                     && (self.manually_paused || world.error_state.is_some())
-                        && let Some(press_time) = self.f_key_press_time
-                    {
-                        // Check if debounce period has elapsed
-                        const DEBOUNCE_DURATION: Duration = Duration::from_millis(250);
-                        const REPEAT_INTERVAL: Duration = Duration::from_millis(67);
-                        if press_time.elapsed() >= DEBOUNCE_DURATION {
-                            // Check if enough time has passed since last repeat
-                            if let Some(last_repeat) = self.f_last_repeat_time
-                                && last_repeat.elapsed() >= REPEAT_INTERVAL
-                            {
-                                world.step_single_frame = true;
-                                self.f_last_repeat_time = Some(Instant::now());
-                                if let Some(window) = &self.window {
-                                    window.request_redraw();
-                                }
+                    && let Some(press_time) = self.f_key_press_time
+                {
+                    // Check if debounce period has elapsed
+                    const DEBOUNCE_DURATION: Duration = Duration::from_millis(250);
+                    const REPEAT_INTERVAL: Duration = Duration::from_millis(67);
+                    if press_time.elapsed() >= DEBOUNCE_DURATION {
+                        // Check if enough time has passed since last repeat
+                        if let Some(last_repeat) = self.f_last_repeat_time
+                            && last_repeat.elapsed() >= REPEAT_INTERVAL
+                        {
+                            world.step_single_frame = true;
+                            self.f_last_repeat_time = Some(Instant::now());
+                            if let Some(window) = &self.window {
+                                window.request_redraw();
                             }
                         }
                     }
+                }
             } else {
                 // Key released - reset state
                 self.f_key_press_time = None;
@@ -605,38 +613,39 @@ impl App {
             // Handle N key for cycle stepping with debounce
             if input.key_pressed(KeyCode::KeyN) {
                 if let Some(world) = &mut self.world
-                    && (self.manually_paused || world.error_state.is_some()) {
-                        // Initial press - execute immediately
-                        world.step_single_cycle = true;
-                        let now = Instant::now();
-                        self.n_key_press_time = Some(now);
-                        self.n_last_repeat_time = Some(now);
-                        self.n_key_processed_initial = true;
-                        if let Some(window) = &self.window {
-                            window.request_redraw();
-                        }
+                    && (self.manually_paused || world.error_state.is_some())
+                {
+                    // Initial press - execute immediately
+                    world.step_single_cycle = true;
+                    let now = Instant::now();
+                    self.n_key_press_time = Some(now);
+                    self.n_last_repeat_time = Some(now);
+                    self.n_key_processed_initial = true;
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
                     }
+                }
             } else if input.key_held(KeyCode::KeyN) {
                 if let Some(world) = &mut self.world
                     && (self.manually_paused || world.error_state.is_some())
-                        && let Some(press_time) = self.n_key_press_time
-                    {
-                        const DEBOUNCE_DURATION: Duration = Duration::from_millis(250);
-                        const REPEAT_INTERVAL: Duration = Duration::from_millis(67);
-                        // Check if debounce period has elapsed
-                        if press_time.elapsed() >= DEBOUNCE_DURATION {
-                            // Check if enough time has passed since last repeat
-                            if let Some(last_repeat) = self.n_last_repeat_time
-                                && last_repeat.elapsed() >= REPEAT_INTERVAL
-                            {
-                                world.step_single_cycle = true;
-                                self.n_last_repeat_time = Some(Instant::now());
-                                if let Some(window) = &self.window {
-                                    window.request_redraw();
-                                }
+                    && let Some(press_time) = self.n_key_press_time
+                {
+                    const DEBOUNCE_DURATION: Duration = Duration::from_millis(250);
+                    const REPEAT_INTERVAL: Duration = Duration::from_millis(67);
+                    // Check if debounce period has elapsed
+                    if press_time.elapsed() >= DEBOUNCE_DURATION {
+                        // Check if enough time has passed since last repeat
+                        if let Some(last_repeat) = self.n_last_repeat_time
+                            && last_repeat.elapsed() >= REPEAT_INTERVAL
+                        {
+                            world.step_single_cycle = true;
+                            self.n_last_repeat_time = Some(Instant::now());
+                            if let Some(window) = &self.window {
+                                window.request_redraw();
                             }
                         }
                     }
+                }
             } else {
                 // Key released - reset state
                 self.n_key_press_time = None;
@@ -854,10 +863,9 @@ impl ApplicationHandler for App {
             }
             _ => {
                 // For other events, request redraw only if egui needs it
-                if needs_repaint
-                    && let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
+                if needs_repaint && let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
             }
         }
     }
