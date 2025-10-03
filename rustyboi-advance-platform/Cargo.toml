@@ -18,7 +18,7 @@ path = "src/lib.rs"
 [dependencies]
 rustyboi-advance-core = { path = "../rustyboi-advance-core" }
 rustyboi-advance-egui = { path = "../rustyboi-advance-egui" }
-bytemuck = { version = "1.23.2", features = ["derive"] }
+bytemuck = { version = "1.24.0", features = ["derive"] }
 clap = { version = "4.5.48", features = ["derive"] }
 egui = "0.32.3"
 egui-wgpu = { version = "0.32.3", features = ["winit"] }
