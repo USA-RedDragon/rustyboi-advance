@@ -144,9 +144,9 @@ mod tests {
     #[test]
     fn test_unknown_opcodes() {
         let unknown_opcodes = [
-            0xF0000000, // Coprocessor space (group 111, not SWI)
-            0xF1000000, // Coprocessor space (group 111, not SWI)
-            0xF2000000, // Coprocessor space (group 111, not SWI)
+            0xE6000010, // Group 011 (bits 27-25=011) with bit 4 set - undefined
+            0xE6100010, // Group 011 with bit 4 set - undefined
+            0xE6200010, // Group 011 with bit 4 set - undefined
         ];
 
         for &opcode in unknown_opcodes.iter() {
@@ -190,10 +190,10 @@ mod tests {
     #[test]
     fn test_shift_operations() {
         let shift_tests = [
-            (0xe1a01081, "MOV R1, R1, LSL #1"), // LSL immediate
-            (0xe1a010a1, "MOV R1, R1, LSR #1"), // LSR immediate
-            (0xe1a010c1, "MOV R1, R1, ASR #1"), // ASR immediate
-            (0xe1a010e1, "MOV R1, R1, ROR #1"), // ROR immediate
+            (0xe1a01081, "MOV R1, R1, LSL #0x1"), // LSL immediate
+            (0xe1a010a1, "MOV R1, R1, LSR #0x1"), // LSR immediate
+            (0xe1a010c1, "MOV R1, R1, ASR #0x1"), // ASR immediate
+            (0xe1a010e1, "MOV R1, R1, ROR #0x1"), // ROR immediate
             (0xe1a01112, "MOV R1, R2, LSL R1"), // LSL register
             (0xe1a01132, "MOV R1, R2, LSR R1"), // LSR register
             (0xe1a01152, "MOV R1, R2, ASR R1"), // ASR register
@@ -268,7 +268,7 @@ mod tests {
             (0xe14f1000, "MRS R1, SPSR"),     // MRS SPSR
             (0xe129f001, "MSR CPSR_CF, R1"),  // MSR register
             (0xe328f001, "MSR CPSR_F, #0x1"), // MSR immediate
-            (0xef000000, "SWI 0x000000"),     // SWI
+            (0xef000000, "SWI 0x0000"),       // SWI
             (0xef123456, "SWI 0x123456"),     // SWI with comment
         ];
 

@@ -122,7 +122,7 @@ impl ShiftType {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operand2 {
-    Immediate(u32),
+    Immediate { value: u32, rotation: u32 }, // rotation is the actual rotate amount (0-30, in steps of 2)
     Register(Register),
     RegisterShifted {
         reg: Register,
@@ -987,7 +987,7 @@ impl std::fmt::Display for Instruction {
 impl std::fmt::Display for Operand2 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Operand2::Immediate(imm) => write!(f, "#{:#X}", imm),
+            Operand2::Immediate { value, .. } => write!(f, "#{:#X}", value),
             Operand2::Register(reg) => write!(f, "{}", reg),
             Operand2::RegisterShifted {
                 reg,
@@ -995,9 +995,13 @@ impl std::fmt::Display for Operand2 {
                 shift_amount,
             } => {
                 if *shift_amount == 0 && *shift_type == ShiftType::Lsl {
+                    // LSL #0 is just the register with no shift
                     write!(f, "{}", reg)
+                } else if *shift_amount == 0 && *shift_type == ShiftType::Ror {
+                    // ROR #0 is actually RRX (Rotate Right Extended)
+                    write!(f, "{}, RRX", reg)
                 } else {
-                    write!(f, "{}, {} #{}", reg, shift_type, shift_amount)
+                    write!(f, "{}, {} #{:#X}", reg, shift_type, shift_amount)
                 }
             }
             Operand2::RegisterShiftedByRegister {
@@ -1035,7 +1039,7 @@ impl AddressingMode {
                 match shift {
                     Some((shift_type, amount)) => {
                         format!(
-                            "[{}, {}{}, {} #{}]{}",
+                            "[{}, {}{}, {} #{:#X}]{}",
                             base, sign, reg, shift_type, amount, wb
                         )
                     }
@@ -1119,7 +1123,16 @@ impl Disassembler {
             DataProcessingOp::Tst
             | DataProcessingOp::Teq
             | DataProcessingOp::Cmp
-            | DataProcessingOp::Cmn => None,
+            | DataProcessingOp::Cmn => {
+                // For comparison instructions, normally Rd is not written
+                // However, if Rd=PC, we need to preserve it for the edge case
+                // where CPSR is restored from SPSR (unpredictable behavior)
+                if rd == 15 {
+                    Some(Register::PC)
+                } else {
+                    None
+                }
+            }
             _ => Some(Register::from_u32(rd)),
         };
 
@@ -1390,8 +1403,17 @@ impl Disassembler {
     fn decode_group_001(opcode: u32, pc: u32, condition: Condition) -> Instruction {
         // Group 001: Data processing immediate, move immediate to status register
 
+        // Check for MSR immediate (Move immediate to Status Register)
+        // Pattern: xxxx 00 1 10 R 10 field_mask 1111 rotate imm8
+        // Mask bits [24-23] = 10, bit [21] = 1, bit [20] = 0, bits [15-12] = 1111
+        if (opcode & 0x01B0F000) == 0x0120F000 {
+            return Self::decode_msr(opcode, condition);
+        }
+
         // Check for undefined instruction space
-        if (opcode & 0x0E000000) == 0x02000000 && (opcode & 0x01200000) == 0x00200000 {
+        // This is the MSR pattern but with Rd != R15, which is reserved/undefined
+        // Pattern: bits [27-26]=00, [25]=1, [24-23]=10, [21-20]=10, [15-12]!=1111
+        if (opcode & 0x01F00000) == 0x01200000 && (opcode & 0x0000F000) != 0x0000F000 {
             return Instruction::Unknown { condition, opcode };
         }
 
@@ -1509,15 +1531,15 @@ impl Disassembler {
         let rs = Self::extract_rs(opcode);
         let rm = Self::extract_rm(opcode);
         let set_flags = Self::extract_s_bit(opcode);
-        let u_bit = (opcode >> 22) & 1;
-        let a_bit = (opcode >> 21) & 1;
+        let u_bit = (opcode >> 22) & 1;  // Bit 22: U (unsigned: 0=signed, 1=unsigned)
+        let a_bit = (opcode >> 21) & 1;  // Bit 21: A (accumulate)
         let rdlo_reg = Register::from_u32(rdlo);
         let rdhi_reg = Register::from_u32(rdhi);
         let rm_reg = Register::from_u32(rm);
         let rs_reg = Register::from_u32(rs);
 
         match (u_bit, a_bit) {
-            (0, 0) => Instruction::Smull {
+            (0, 0) => Instruction::Umull {
                 condition,
                 rdlo: rdlo_reg,
                 rdhi: rdhi_reg,
@@ -1525,7 +1547,7 @@ impl Disassembler {
                 rs: rs_reg,
                 set_flags,
             },
-            (0, 1) => Instruction::Smlal {
+            (0, 1) => Instruction::Umlal {
                 condition,
                 rdlo: rdlo_reg,
                 rdhi: rdhi_reg,
@@ -1533,7 +1555,7 @@ impl Disassembler {
                 rs: rs_reg,
                 set_flags,
             },
-            (1, 0) => Instruction::Umull {
+            (1, 0) => Instruction::Smull {
                 condition,
                 rdlo: rdlo_reg,
                 rdhi: rdhi_reg,
@@ -1541,7 +1563,7 @@ impl Disassembler {
                 rs: rs_reg,
                 set_flags,
             },
-            (1, 1) => Instruction::Umlal {
+            (1, 1) => Instruction::Smlal {
                 condition,
                 rdlo: rdlo_reg,
                 rdhi: rdhi_reg,
@@ -1937,7 +1959,7 @@ impl Disassembler {
             let imm = opcode & 0xFF;
             let rotate = ((opcode >> 8) & 0xF) * 2;
             let rotated_imm = imm.rotate_right(rotate);
-            Operand2::Immediate(rotated_imm)
+            Operand2::Immediate { value: rotated_imm, rotation: rotate }
         } else {
             // Register operand with optional shift
             let rm = opcode & 0xF;
@@ -2003,8 +2025,15 @@ impl Disassembler {
     fn try_decode_adr_immediate(opcode: u32, pc: u32) -> Option<u32> {
         let opcode_type = (opcode >> 21) & 0xF;
         let rn = (opcode >> 16) & 0xF;
+        let rd = (opcode >> 12) & 0xF;
+        let s_bit = (opcode >> 20) & 1;
 
-        if rn == 15 && (opcode_type == 0x4 || opcode_type == 0x2) {
+        // ADR is only valid when:
+        // 1. Rn is PC (15)
+        // 2. Either Rd is not PC, OR (Rd is PC and S flag is 0)
+        // 3. Operation is ADD or SUB
+        // When Rd=PC and S=1, it's a special instruction that restores CPSR from SPSR
+        if rn == 15 && (opcode_type == 0x4 || opcode_type == 0x2) && !(rd == 15 && s_bit == 1) {
             let imm = opcode & 0xFF;
             let rotate = ((opcode >> 8) & 0xF) * 2;
             let rotated_imm = imm.rotate_right(rotate);
@@ -2075,7 +2104,7 @@ impl Disassembler {
         let rd = opcode & 0x7;
 
         let operand2 = if is_imm != 0 {
-            Operand2::Immediate(rn_or_imm as u32)
+            Operand2::Immediate { value: rn_or_imm as u32, rotation: 0 }
         } else {
             Operand2::Register(Register::from_u32(rn_or_imm as u32))
         };
@@ -2122,7 +2151,7 @@ impl Disassembler {
             set_flags: true,
             rn: rn_reg,
             rd: rd_reg,
-            operand2: Operand2::Immediate(imm8 as u32),
+            operand2: Operand2::Immediate { value: imm8 as u32, rotation: 0 },
         }
     }
 
@@ -2184,7 +2213,7 @@ impl Disassembler {
                 shift_type: ShiftType::Ror,
                 shift_reg: Register::from_u32(rs as u32),
             },
-            0x9 => Operand2::Immediate(0), // NEG is RSB Rd, Rs, #0
+            0x9 => Operand2::Immediate { value: 0, rotation: 0 }, // NEG is RSB Rd, Rs, #0
             _ => Operand2::Register(Register::from_u32(rs as u32)),
         };
 
@@ -2488,7 +2517,7 @@ impl Disassembler {
                 set_flags: false,
                 rn: Some(source_reg),
                 rd: Some(Register::from_u32(rd as u32)),
-                operand2: Operand2::Immediate(offset),
+                operand2: Operand2::Immediate { value: offset, rotation: 0 },
             }
         }
     }
@@ -2511,7 +2540,7 @@ impl Disassembler {
             set_flags: false,
             rn: Some(Register::SP),
             rd: Some(Register::SP),
-            operand2: Operand2::Immediate(offset),
+            operand2: Operand2::Immediate { value: offset, rotation: 0 },
         }
     }
 
@@ -2667,7 +2696,7 @@ impl Disassembler {
                 set_flags: false,
                 rn: None,
                 rd: Some(Register::LR),
-                operand2: Operand2::Immediate(lr_value & 0xFFC00000), // High 11 bits
+                operand2: Operand2::Immediate { value: lr_value & 0xFFC00000, rotation: 0 }, // High 11 bits
             }
         } else {
             // Second half: Complete the BL instruction

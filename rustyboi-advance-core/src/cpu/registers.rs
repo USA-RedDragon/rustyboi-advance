@@ -464,4 +464,53 @@ impl Registers {
             Register::PC => self.pc = value,
         }
     }
+
+    /// Read a register value from user mode (for LDM/STM with ^ suffix)
+    /// This is used when the S bit is set in LDM/STM instructions
+    pub fn read_user_register(&self, reg: Register) -> u32 {
+        match reg {
+            Register::R0 => self.r0,
+            Register::R1 => self.r1,
+            Register::R2 => self.r2,
+            Register::R3 => self.r3,
+            Register::R4 => self.r4,
+            Register::R5 => self.r5,
+            Register::R6 => self.r6,
+            Register::R7 => self.r7,
+            // R8-R12: Use user/system mode versions (not FIQ banked)
+            Register::R8 => self.r8,
+            Register::R9 => self.r9,
+            Register::R10 => self.r10,
+            Register::R11 => self.r11,
+            Register::R12 => self.r12,
+            // SP and LR: Use user/system mode versions
+            Register::SP => self.sp.fiq, // User/System share with FIQ field in PerModeRegister
+            Register::LR => self.lr.fiq, // User/System share with FIQ field in PerModeRegister
+            Register::PC => self.pc,
+        }
+    }
+
+    /// Write a register value to user mode (for LDM/STM with ^ suffix)
+    pub fn write_user_register(&mut self, reg: Register, value: u32) {
+        match reg {
+            Register::R0 => self.r0 = value,
+            Register::R1 => self.r1 = value,
+            Register::R2 => self.r2 = value,
+            Register::R3 => self.r3 = value,
+            Register::R4 => self.r4 = value,
+            Register::R5 => self.r5 = value,
+            Register::R6 => self.r6 = value,
+            Register::R7 => self.r7 = value,
+            // R8-R12: Use user/system mode versions (not FIQ banked)
+            Register::R8 => self.r8 = value,
+            Register::R9 => self.r9 = value,
+            Register::R10 => self.r10 = value,
+            Register::R11 => self.r11 = value,
+            Register::R12 => self.r12 = value,
+            // SP and LR: Use user/system mode versions
+            Register::SP => self.sp.fiq = value, // User/System share with FIQ field
+            Register::LR => self.lr.fiq = value, // User/System share with FIQ field
+            Register::PC => self.pc = value,
+        }
+    }
 }

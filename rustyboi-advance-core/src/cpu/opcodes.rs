@@ -40,6 +40,7 @@ pub fn barrel_shift(
     shift_type: &ShiftType,
     shift_amount: u32,
     carry_in: bool,
+    is_immediate: bool,
 ) -> (u32, bool) {
     match shift_type {
         ShiftType::Lsl => {
@@ -95,12 +96,27 @@ pub fn barrel_shift(
         }
         ShiftType::Ror => {
             // Rotate right
-            let shift_amount = shift_amount % 32;
             if shift_amount == 0 {
-                (value, carry_in)
+                if is_immediate {
+                    // ROR #0 (immediate) is actually RRX (Rotate Right Extended)
+                    // Rotate right by 1 through carry flag
+                    let new_carry = value & 1 == 1;
+                    let result = (value >> 1) | (if carry_in { 1 << 31 } else { 0 });
+                    (result, new_carry)
+                } else {
+                    // ROR Rs where Rs=0 (register) is a no-op
+                    (value, carry_in)
+                }
             } else {
-                let carry = (value >> (shift_amount - 1)) & 1 == 1;
-                (value.rotate_right(shift_amount), carry)
+                // For ROR, shift_amount is taken modulo 32
+                let shift_amount = shift_amount % 32;
+                if shift_amount == 0 {
+                    // Shift by exact multiple of 32: value unchanged, carry = bit 31
+                    (value, (value >> 31) & 1 == 1)
+                } else {
+                    let carry = (value >> (shift_amount - 1)) & 1 == 1;
+                    (value.rotate_right(shift_amount), carry)
+                }
             }
         }
     }
@@ -114,7 +130,15 @@ pub fn evaluate_operand2(
     carry_in: bool,
 ) -> (u32, bool) {
     match operand2 {
-        Operand2::Immediate(imm) => (*imm, carry_in),
+        Operand2::Immediate { value, rotation } => {
+            // If rotation is non-zero, carry is set to bit 31 of the rotated value
+            let carry = if *rotation > 0 {
+                (*value & 0x80000000) != 0
+            } else {
+                carry_in
+            };
+            (*value, carry)
+        }
         Operand2::Register(reg) => (registers.read_register(*reg), carry_in),
         Operand2::RegisterShifted {
             reg,
@@ -122,7 +146,7 @@ pub fn evaluate_operand2(
             shift_amount,
         } => {
             let value = registers.read_register(*reg);
-            barrel_shift(value, shift_type, *shift_amount, carry_in)
+            barrel_shift(value, shift_type, *shift_amount, carry_in, true)
         }
         Operand2::RegisterShiftedByRegister {
             reg,
@@ -131,7 +155,7 @@ pub fn evaluate_operand2(
         } => {
             let value = registers.read_register(*reg);
             let shift_amount = registers.read_register(*shift_reg) & 0xFF; // Only bottom byte used
-            barrel_shift(value, shift_type, shift_amount, carry_in)
+            barrel_shift(value, shift_type, shift_amount, carry_in, false)
         }
     }
 }
@@ -255,19 +279,28 @@ impl ARM7TDMI {
                 byte as i32 as u32 // Sign-extend
             }
             LoadType::SignedHalfword => {
-                let halfword = (mmio as &dyn Addressable).read16(addr & !0x1) as i16;
-                halfword as i32 as u32 // Sign-extend
+                let halfword = (mmio as &dyn Addressable).read16(addr & !0x1);
+                
+                // If address is odd, we need to rotate and sign-extend the upper byte
+                if (addr & 0x1) != 0 {
+                    // Misaligned: extract upper byte and sign-extend it
+                    let byte = (halfword >> 8) as u8 as i8;
+                    byte as i32 as u32
+                } else {
+                    // Aligned: sign-extend the full halfword
+                    halfword as i16 as i32 as u32
+                }
             }
         };
 
-        // Write to destination register
-        self.registers.write_register(rd, value);
-
         // Writeback if needed
+        // When Rd == Rn, the loaded value should take precedence
         if writeback {
-            let (new_base, _) = self.calculate_address(rn, addressing);
+            let new_base = self.calculate_writeback_value(rn, addressing);
             self.registers.write_register(rn, new_base);
         }
+
+        self.registers.write_register(rd, value);
 
         // If loading to PC, flush pipeline
         if rd == Register::PC {
@@ -295,8 +328,10 @@ impl ARM7TDMI {
     ) -> u32 {
         use crate::memory::Addressable;
 
-        let (addr, writeback) = self.calculate_address(rn, addressing);
+        // When Rd == Rn with writeback, we must store the OLD value of the register
         let value = self.registers.read_register(rd);
+
+        let (addr, writeback) = self.calculate_address(rn, addressing);
 
         // Store value based on type
         match store_type {
@@ -313,7 +348,7 @@ impl ARM7TDMI {
 
         // Writeback if needed
         if writeback {
-            let (new_base, _) = self.calculate_address(rn, addressing);
+            let new_base = self.calculate_writeback_value(rn, addressing);
             self.registers.write_register(rn, new_base);
         }
 
@@ -330,13 +365,48 @@ impl ARM7TDMI {
         rn: Option<Register>,
         rd: Option<Register>,
         operand2: &Operand2,
+        instruction_pc: u32,
     ) -> u32 {
         let carry_in = self.registers.get_flag(Flag::Carry);
+        
+        // Calculate PC value for use as operand
+        // When Operand2 uses a register shift, ALL PC reads (whether Rn or Rm) 
+        // see PC as instruction_pc + 12 (ARM) or + 6 (Thumb) due to the extra internal cycle
+        // Otherwise, PC reads as instruction_pc + 8 (ARM) or + 4 (Thumb)
+        let is_thumb = self.registers.get_flag(Flag::ThumbState);
+        let uses_register_shift = matches!(
+            operand2,
+            Operand2::RegisterShiftedByRegister { .. }
+        );
+        
+        let pc_as_operand = if uses_register_shift {
+            // Any register shift: +12 in ARM, +6 in Thumb
+            if is_thumb {
+                instruction_pc.wrapping_add(6)
+            } else {
+                instruction_pc.wrapping_add(12)
+            }
+        } else {
+            // Immediate shift or register/immediate operand: +8 in ARM, +4 in Thumb
+            if is_thumb {
+                instruction_pc.wrapping_add(4)
+            } else {
+                instruction_pc.wrapping_add(8)
+            }
+        };
+        
+        // Temporarily set PC to the correct value for operand reads
+        let original_pc = self.registers.pc;
+        self.registers.pc = pc_as_operand;
+        
         let (operand2_value, shifter_carry) =
             evaluate_operand2(operand2, &self.registers, carry_in);
 
         // Get Rn value if needed
         let rn_value = rn.map(|r| self.registers.read_register(r)).unwrap_or(0);
+        
+        // Restore original PC
+        self.registers.pc = original_pc;
 
         // Perform the operation
         let result = match op {
@@ -475,13 +545,43 @@ impl ARM7TDMI {
             }
         };
 
+        // Special case: For comparison instructions (TST, TEQ, CMP, CMN) with Rd=PC and S=1,
+        // restore CPSR from SPSR without branching (technically unpredictable behavior)
+        let is_comparison = matches!(
+            op,
+            DataProcessingOp::Tst | DataProcessingOp::Teq | DataProcessingOp::Cmp | DataProcessingOp::Cmn
+        );
+        
+        if is_comparison && rd == Some(Register::PC) && set_flags {
+            // Restore CPSR from SPSR but don't write to PC or branch
+            let spsr = self.registers.get_spsr();
+            self.registers.cpsr = spsr;
+            // After restoring CPSR, check if we need to update Thumb state
+            let new_thumb_state = (spsr & (1 << 5)) != 0;
+            self.registers.set_flag(Flag::ThumbState, new_thumb_state);
+            
+            // Don't write result to any register, don't branch
+            // Continue normal execution (pipeline not flushed)
+            return 1; // 1S cycle for the instruction
+        }
+
         // Write result to destination register (if not a test/compare instruction)
         if let Some(rd) = rd {
             self.registers.write_register(rd, result);
 
             // If writing to PC, flush the pipeline
             if rd == Register::PC {
-                // Align based on current mode
+                // Special case: If S bit is set and Rd is PC, restore CPSR from SPSR
+                // This is used for exception returns (e.g., SUBS PC, LR, #4)
+                if set_flags {
+                    let spsr = self.registers.get_spsr();
+                    self.registers.cpsr = spsr;
+                    // After restoring CPSR, check if we need to update Thumb state
+                    let new_thumb_state = (spsr & (1 << 5)) != 0;
+                    self.registers.set_flag(Flag::ThumbState, new_thumb_state);
+                }
+                
+                // Align based on current mode (after potentially restoring CPSR)
                 // ARM mode: word aligned (clear bits [1:0])
                 // Thumb mode: halfword aligned (clear bit 0)
                 let is_thumb = self.registers.get_flag(Flag::ThumbState);
@@ -516,17 +616,16 @@ impl ARM7TDMI {
 
     #[inline]
     /// Execute a branch with link instruction (BL)
-    pub fn execute_branch_link(&mut self, target: u32) -> u32 {
+    pub fn execute_branch_link(&mut self, target: u32, instruction_pc: u32) -> u32 {
         // Save return address in LR
-        // PC is already 8 bytes ahead in ARM mode (2 instructions) or 4 bytes ahead in Thumb mode
         // Return address should point to the instruction after BL
         let is_thumb = self.registers.get_flag(Flag::ThumbState);
         let return_addr = if is_thumb {
-            // Thumb: PC is 4 ahead, want next instruction (BL + 2), so PC - 2
-            self.registers.pc.wrapping_sub(2)
+            // Thumb: next instruction is at instruction_pc + 2
+            instruction_pc.wrapping_add(2)
         } else {
-            // ARM: PC is 8 ahead, want next instruction (BL + 4), so PC - 4
-            self.registers.pc.wrapping_sub(4)
+            // ARM: next instruction is at instruction_pc + 4
+            instruction_pc.wrapping_add(4)
         };
         self.registers.set_lr(return_addr);
         self.branch_to(target);
@@ -567,6 +666,7 @@ impl ARM7TDMI {
     }
 
     /// Calculate the effective address for LDR/STR based on addressing mode
+    /// Returns (address, writeback_needed)
     #[inline]
     fn calculate_address(
         &mut self,
@@ -591,7 +691,8 @@ impl ARM7TDMI {
                 let offset_value = self.registers.read_register(*reg);
                 let offset = if let Some((shift_type, shift_amount)) = shift {
                     let carry = self.registers.get_flag(Flag::Carry);
-                    barrel_shift(offset_value, shift_type, *shift_amount, carry).0
+                    // Shifts in addressing modes are always immediate
+                    barrel_shift(offset_value, shift_type, *shift_amount, carry, true).0
                 } else {
                     offset_value
                 };
@@ -607,13 +708,49 @@ impl ARM7TDMI {
                 let addr = base.wrapping_add(*offset as u32);
                 (addr, true) // Pre-indexed always writes back
             }
-            AddressingMode::PostIndexed { offset } => {
-                // Post-indexed: use base address, then add offset to base
-                let addr = base;
-                let new_base = base.wrapping_add(*offset as u32);
-                self.registers.write_register(rn, new_base);
-                (addr, false) // Writeback already done
+            AddressingMode::PostIndexed { .. } => {
+                // Post-indexed: use base address, writeback will be handled by caller
+                (base, true)
             }
+        }
+    }
+
+    /// Calculate the new base value for writeback
+    /// This is separate from calculate_address to allow proper ordering in load/store
+    #[inline]
+    fn calculate_writeback_value(
+        &mut self,
+        rn: Register,
+        addressing: &rustyboi_advance_debugger_lib::disassembler::AddressingMode,
+    ) -> u32 {
+        use rustyboi_advance_debugger_lib::disassembler::AddressingMode;
+
+        let base = self.registers.read_register(rn);
+
+        match addressing {
+            AddressingMode::Offset { offset, .. } => base.wrapping_add(*offset as u32),
+            AddressingMode::RegisterOffset {
+                reg,
+                shift,
+                add,
+                ..
+            } => {
+                let offset_value = self.registers.read_register(*reg);
+                let offset = if let Some((shift_type, shift_amount)) = shift {
+                    let carry = self.registers.get_flag(Flag::Carry);
+                    barrel_shift(offset_value, shift_type, *shift_amount, carry, true).0
+                } else {
+                    offset_value
+                };
+
+                if *add {
+                    base.wrapping_add(offset)
+                } else {
+                    base.wrapping_sub(offset)
+                }
+            }
+            AddressingMode::PreIndexed { offset } => base.wrapping_add(*offset as u32),
+            AddressingMode::PostIndexed { offset } => base.wrapping_add(*offset as u32),
         }
     }
 
@@ -699,6 +836,55 @@ impl ARM7TDMI {
         mmio: &mut memory::mmio::Mmio,
     ) -> u32 {
         self.execute_load_generic(rd, rn, addressing, LoadType::SignedHalfword, mmio)
+    }
+
+    /// Execute SWP (Swap) instruction
+    /// Atomically swaps a word or byte between a register and memory
+    /// Format: SWP{B} Rd, Rm, [Rn]
+    /// 1. temp = memory[Rn]
+    /// 2. memory[Rn] = Rm
+    /// 3. Rd = temp
+    #[inline]
+    pub fn execute_swp(
+        &mut self,
+        rd: Register,
+        rm: Register,
+        rn: Register,
+        byte: bool,
+        mmio: &mut memory::mmio::Mmio,
+    ) -> u32 {
+        use crate::memory::Addressable;
+
+        let addr = self.registers.read_register(rn);
+        let rm_value = self.registers.read_register(rm);
+
+        if byte {
+            // SWPB - swap byte
+            let temp = (mmio as &dyn Addressable).read(addr);
+            (mmio as &mut dyn Addressable).write(addr, rm_value as u8);
+            self.registers.write_register(rd, temp as u32);
+        } else {
+            // SWP - swap word
+            // Word access uses aligned address
+            let aligned_addr = addr & !0x3;
+            let temp = (mmio as &dyn Addressable).read32(aligned_addr);
+            
+            // If address is misaligned, rotate the loaded value like LDR does
+            let result = if addr & 0x3 != 0 {
+                let rotation = (addr & 0x3) * 8;
+                temp.rotate_right(rotation)
+            } else {
+                temp
+            };
+            
+            // Store to aligned address (no rotation on store)
+            (mmio as &mut dyn Addressable).write32(aligned_addr, rm_value);
+            self.registers.write_register(rd, result);
+        }
+
+        // SWP takes 1S + 2N + 1I cycles (1 sequential, 2 non-sequential, 1 internal)
+        self.add_internal_cycles(1);
+        3
     }
 
     /// Execute MRS (Move PSR to Register) instruction
@@ -995,6 +1181,23 @@ impl ARM7TDMI {
         let mut addr = self.registers.read_register(rn);
         let register_count = register_list.mask.count_ones();
 
+        // Special case: Empty register list
+        // LDM with empty rlist loads PC and adds 0x40 to base register
+        if register_count == 0 {
+            let value = (mmio as &dyn Addressable).read32(addr);
+            self.registers.write_register(Register::PC, value);
+            
+            if writeback {
+                self.registers.write_register(rn, addr.wrapping_add(0x40));
+            }
+            
+            // Flush pipeline since we loaded PC
+            let is_thumb = self.registers.get_flag(Flag::ThumbState);
+            let aligned_value = if is_thumb { value & !0x1 } else { value & !0x3 };
+            self.branch_to(aligned_value);
+            return 0; // Cycles counted during pipeline flush/refill
+        }
+
         // Calculate start address and direction based on addressing mode
         let (mut start_addr, increment) = match addressing_mode {
             AddressingModeType::IA => {
@@ -1029,17 +1232,14 @@ impl ARM7TDMI {
         for reg_num in 0..16 {
             if register_list.contains(reg_num) {
                 let value = (mmio as &dyn Addressable).read32(current_addr);
+                let reg = Register::from_u32(reg_num);
 
                 if user_mode && reg_num != 15 {
                     // User mode transfer (S bit set, not loading PC)
-                    // Load user mode registers instead of current mode
-                    // This is used for exception handlers
-                    // For now, just load normally
-                    self.registers
-                        .write_register(Register::from_u32(reg_num), value);
+                    // Load into user mode registers instead of current mode
+                    self.registers.write_user_register(reg, value);
                 } else {
-                    self.registers
-                        .write_register(Register::from_u32(reg_num), value);
+                    self.registers.write_register(reg, value);
                 }
 
                 if reg_num == 15 {
@@ -1101,6 +1301,52 @@ impl ARM7TDMI {
         let mut addr = self.registers.read_register(rn);
         let register_count = register_list.mask.count_ones();
 
+        // Special case: Empty register list
+        // STM with empty rlist stores PC and adjusts base register by 0x40
+        // It simulates storing 16 registers (0x40 bytes)
+        if register_count == 0 {
+            let pc_value = self.registers.read_register(Register::PC);
+            
+            // Determine store address based on addressing mode
+            // Empty list behaves as if storing 16 registers
+            let store_addr = match addressing_mode {
+                AddressingModeType::IA => {
+                    // Increment After: store at current address
+                    addr
+                }
+                AddressingModeType::IB => {
+                    // Increment Before: increment first by 4, store there
+                    addr.wrapping_add(4)
+                }
+                AddressingModeType::DA => {
+                    // Decrement After: store at addr-60 (15 words back)
+                    // This is the position of the first register in a 16-register block
+                    addr.wrapping_sub(0x3C)
+                }
+                AddressingModeType::DB => {
+                    // Decrement Before: decrement by 0x40 first, store at lowest address
+                    addr.wrapping_sub(0x40)
+                }
+            };
+            
+            (mmio as &mut dyn Addressable).write32(store_addr, pc_value);
+            
+            if writeback {
+                let new_base = match addressing_mode {
+                    AddressingModeType::IA | AddressingModeType::IB => {
+                        addr.wrapping_add(0x40)
+                    }
+                    AddressingModeType::DA | AddressingModeType::DB => {
+                        addr.wrapping_sub(0x40)
+                    }
+                };
+                self.registers.write_register(rn, new_base);
+            }
+            
+            // STM takes 2N cycles
+            return 2;
+        }
+
         // Calculate start address and direction based on addressing mode
         let (mut start_addr, increment) = match addressing_mode {
             AddressingModeType::IA => {
@@ -1128,6 +1374,10 @@ impl ARM7TDMI {
             start_addr = addr.wrapping_sub(4 * (register_count - 1));
         }
 
+        // Save the original base register value before writeback
+        // This is needed when Rn is in the register list
+        let original_base = self.registers.read_register(rn);
+
         // Writeback (done before storing for STM)
         if writeback {
             let final_addr = if increment {
@@ -1142,18 +1392,35 @@ impl ARM7TDMI {
             self.registers.write_register(rn, final_addr);
         }
 
+        // Check if base register is the first (lowest numbered) register in the list
+        let base_is_first = register_list.contains(rn as u32) && {
+            let mut is_first = true;
+            for reg_num in 0..(rn as u32) {
+                if register_list.contains(reg_num) {
+                    is_first = false;
+                    break;
+                }
+            }
+            is_first
+        };
+
         // Store registers in order (R0-R15)
         let mut current_addr = start_addr;
 
         for reg_num in 0..16 {
             if register_list.contains(reg_num) {
-                let value = if user_mode && reg_num != 15 {
-                    // User mode transfer (S bit set)
+                let reg = Register::from_u32(reg_num);
+                
+                // Special case: if this is the base register and it's the first in the list,
+                // store the original (pre-writeback) value
+                let value = if reg == rn && base_is_first {
+                    original_base
+                } else if user_mode && reg_num != 15 {
+                    // User mode transfer (S bit set, not storing PC)
                     // Store user mode registers instead of current mode
-                    // For now, just store normally
-                    self.registers.read_register(Register::from_u32(reg_num))
+                    self.registers.read_user_register(reg)
                 } else {
-                    self.registers.read_register(Register::from_u32(reg_num))
+                    self.registers.read_register(reg)
                 };
 
                 (mmio as &mut dyn Addressable).write32(current_addr, value);
@@ -1171,6 +1438,7 @@ impl ARM7TDMI {
     pub fn dispatch_instruction(
         &mut self,
         instruction: &Instruction,
+        instruction_pc: u32,
         mmio: &mut memory::mmio::Mmio,
     ) -> u32 {
         match instruction {
@@ -1182,7 +1450,7 @@ impl ARM7TDMI {
                 rd,
                 operand2,
             } => self.execute_if_condition(condition, |cpu| {
-                cpu.execute_data_processing(op, *set_flags, *rn, *rd, operand2)
+                cpu.execute_data_processing(op, *set_flags, *rn, *rd, operand2, instruction_pc)
             }),
 
             Instruction::B { condition, target } => {
@@ -1190,7 +1458,7 @@ impl ARM7TDMI {
             }
 
             Instruction::Bl { condition, target } => {
-                self.execute_if_condition(condition, |cpu| cpu.execute_branch_link(*target))
+                self.execute_if_condition(condition, |cpu| cpu.execute_branch_link(*target, instruction_pc))
             }
 
             Instruction::Bx { condition, rm } => {
@@ -1407,6 +1675,20 @@ impl ARM7TDMI {
             } => self.execute_if_condition(condition, |cpu| {
                 cpu.execute_smlal(*rdlo, *rdhi, *rm, *rs, *set_flags)
             }),
+
+            Instruction::Swp {
+                condition,
+                rd,
+                rm,
+                rn,
+                byte,
+            } => {
+                if check_condition(condition, self.registers.cpsr) {
+                    self.execute_swp(*rd, *rm, *rn, *byte, mmio)
+                } else {
+                    1 // Failed condition still takes 1S cycle
+                }
+            }
 
             Instruction::Swi { condition, .. } => {
                 if check_condition(condition, self.registers.cpsr) {

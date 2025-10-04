@@ -19,6 +19,18 @@ pub const SAMPLE_INSTRUCTIONS: &[TestInstruction] = &[
         pc: None,
     },
     TestInstruction {
+        opcode: 0xe3a00004,
+        expected_asm: "MOV R0, #0x4",
+        description: "MOV immediate small value",
+        pc: None,
+    },
+    TestInstruction {
+        opcode: 0xe3a01301,
+        expected_asm: "MOV R1, #0x4000000",
+        description: "MOV immediate with rotation",
+        pc: None,
+    },
+    TestInstruction {
         opcode: 0xe0801002,
         expected_asm: "ADD R1, R0, R2",
         description: "ADD register",
@@ -34,6 +46,12 @@ pub const SAMPLE_INSTRUCTIONS: &[TestInstruction] = &[
         opcode: 0xe2801001,
         expected_asm: "ADD R1, R0, #0x1",
         description: "ADD immediate",
+        pc: None,
+    },
+    TestInstruction {
+        opcode: 0xe2b00001,
+        expected_asm: "ADCS R0, R0, #0x1",
+        description: "ADCS immediate",
         pc: None,
     },
     TestInstruction {
@@ -214,13 +232,13 @@ pub const SAMPLE_INSTRUCTIONS: &[TestInstruction] = &[
     // Long multiply
     TestInstruction {
         opcode: 0xe0800291,
-        expected_asm: "UMULL R0, R1, R1, R2",
+        expected_asm: "UMULL R0, R0, R1, R2",
         description: "UMULL",
         pc: None,
     },
     TestInstruction {
         opcode: 0xe0a00291,
-        expected_asm: "UMLAL R0, R1, R1, R2",
+        expected_asm: "UMLAL R0, R0, R1, R2",
         description: "UMLAL",
         pc: None,
     },
@@ -252,26 +270,32 @@ pub const SAMPLE_INSTRUCTIONS: &[TestInstruction] = &[
     // Data processing with shifts
     TestInstruction {
         opcode: 0xe1a01081,
-        expected_asm: "MOV R1, R1, LSL #1",
+        expected_asm: "MOV R1, R1, LSL #0x1",
         description: "MOV with LSL shift",
         pc: None,
     },
     TestInstruction {
         opcode: 0xe1a010a1,
-        expected_asm: "MOV R1, R1, LSR #1",
+        expected_asm: "MOV R1, R1, LSR #0x1",
         description: "MOV with LSR shift",
         pc: None,
     },
     TestInstruction {
         opcode: 0xe1a010c1,
-        expected_asm: "MOV R1, R1, ASR #1",
+        expected_asm: "MOV R1, R1, ASR #0x1",
         description: "MOV with ASR shift",
         pc: None,
     },
     TestInstruction {
         opcode: 0xe1a010e1,
-        expected_asm: "MOV R1, R1, ROR #1",
+        expected_asm: "MOV R1, R1, ROR #0x1",
         description: "MOV with ROR shift",
+        pc: None,
+    },
+    TestInstruction {
+        opcode: 0xe1b00060,
+        expected_asm: "MOVS R0, R0, RRX",
+        description: "MOVS with RRX (ROR #0)",
         pc: None,
     },
     // System instructions
@@ -300,6 +324,12 @@ pub const SAMPLE_INSTRUCTIONS: &[TestInstruction] = &[
         pc: None,
     },
     TestInstruction {
+        opcode: 0xe328f101,
+        expected_asm: "MSR CPSR_F, #0x40000000",
+        description: "MSR immediate with rotation",
+        pc: None,
+    },
+    TestInstruction {
         opcode: 0xe1000090,
         expected_asm: "SWP R0, R0, [R0]",
         description: "SWP",
@@ -313,7 +343,7 @@ pub const SAMPLE_INSTRUCTIONS: &[TestInstruction] = &[
     },
     TestInstruction {
         opcode: 0xef000000,
-        expected_asm: "SWI 0x000000",
+        expected_asm: "SWI 0x0000",
         description: "SWI",
         pc: None,
     },

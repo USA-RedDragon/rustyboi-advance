@@ -240,7 +240,7 @@ impl ARM7TDMI {
         // Execute stage - execute the instruction currently in execute stage
         if let Some(execute_instr) = self.pipeline.execute.take() {
             if let Some(instruction) = execute_instr.instruction {
-                total_cycles += self.dispatch_instruction(&instruction, mmio);
+                total_cycles += self.dispatch_instruction(&instruction, execute_instr.pc, mmio);
                 self.cycle_counts.instructions_executed += 1;
             } else {
                 // No decoded instruction - likely Thumb mode which is not yet implemented
