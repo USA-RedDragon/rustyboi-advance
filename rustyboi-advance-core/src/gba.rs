@@ -101,24 +101,24 @@ impl GBA {
 
             if breakpoint_hit {
                 // Breakpoint hit - return current frame and indicate breakpoint hit
-                return (self.ppu.get_frame(), true);
+                return (self.ppu.get_frame(&self.mmio), true);
             }
 
             // Check if PPU has completed a frame
             if self.ppu.has_frame() {
-                return (self.ppu.get_frame(), false);
+                return (self.ppu.get_frame(&self.mmio), false);
             }
 
             // If PPU is disabled or taking too long, cap the cycles to prevent audio buildup
             if cpu_cycles_this_frame >= MAX_CYCLES_PER_FRAME {
                 // PPU disabled or stuck - return after reasonable cycle count to maintain timing
-                return (self.ppu.get_frame(), false);
+                return (self.ppu.get_frame(&self.mmio), false);
             }
         }
     }
 
     pub fn get_current_frame(&mut self) -> [u8; ppu::FRAMEBUFFER_SIZE] {
-        self.ppu.get_frame()
+        self.ppu.get_frame(&self.mmio)
     }
 
     pub fn get_cpu_registers(&self) -> &cpu::registers::Registers {
@@ -135,6 +135,46 @@ impl GBA {
 
     pub fn get_ppu(&self) -> &ppu::Ppu {
         &self.ppu
+    }
+
+    pub fn get_ppu_display_mode(&self) -> u8 {
+        self.ppu.get_display_mode(&self.mmio)
+    }
+
+    pub fn get_ppu_cycle(&self) -> u32 {
+        self.ppu.get_cycle()
+    }
+
+    pub fn get_ppu_pixel_index(&self) -> u32 {
+        self.ppu.get_pixel_index()
+    }
+
+    pub fn get_ppu_scanline_index(&self) -> u16 {
+        self.ppu.get_scanline_index()
+    }
+
+    pub fn get_ppu_dispcnt(&self) -> u16 {
+        use crate::memory::Addressable;
+        (self.mmio.read(memory::mmio::IO_REGISTERS_START + 1) as u16) << 8 | 
+        (self.mmio.read(memory::mmio::IO_REGISTERS_START) as u16)
+    }
+
+    pub fn get_ppu_dispstat(&self) -> u8 {
+        use crate::memory::Addressable;
+        self.mmio.read(memory::mmio::IO_REGISTERS_START + 0x04)
+    }
+
+    pub fn get_ppu_vcount(&self) -> u8 {
+        use crate::memory::Addressable;
+        self.mmio.read(memory::mmio::IO_REGISTERS_START + 0x06)
+    }
+
+    pub fn get_ppu_debug_enabled(&self) -> bool {
+        self.ppu.is_debug_enabled()
+    }
+
+    pub fn get_ppu_scale(&self) -> f32 {
+        self.ppu.get_scale()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
