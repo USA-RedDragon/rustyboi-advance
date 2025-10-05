@@ -101,7 +101,7 @@ fn bench_register_creation(c: &mut Criterion) {
         b.iter(|| {
             for i in 0..16 {
                 black_box(
-                    rustyboi_advance_debugger_lib::disassembler::Register::from_u32_safe(
+                    rustyboi_advance_debugger_lib::disassembler::Register::from_u32(
                         black_box(i),
                     ),
                 );

@@ -5,13 +5,35 @@ use rustyboi_advance_debugger_lib::disassembler::{
     Condition, DataProcessingOp, Instruction, Operand2, Register, ShiftType,
 };
 
+// Common bit masks
+const UPPER_24_BITS_MASK: u32 = 0xFFFFFF00;
+const UPPER_16_BITS_MASK: u32 = 0xFFFF0000;
+const UPPER_8_BITS_MASK: u32 = 0xFF000000;
+const SIGN_BIT_MASK: u32 = 0x8000_0000;
+
+// ARM/Thumb PC offsets
+const ARM_PC_OFFSET: u32 = 8;
+const ARM_PC_OFFSET_WITH_SHIFT: u32 = 12;
+const THUMB_PC_OFFSET: u32 = 4;
+const THUMB_PC_OFFSET_WITH_SHIFT: u32 = 6;
+const ARM_INSTRUCTION_SIZE: u32 = 4;
+const THUMB_INSTRUCTION_SIZE: u32 = 2;
+
+// MSR field masks
+const MSR_FLAGS_MASK: u32 = 0xFF000000;
+const MSR_STATUS_MASK: u32 = 0x00FF0000;
+const MSR_EXTENSION_MASK: u32 = 0x0000FF00;
+const MSR_CONTROL_MASK: u32 = 0x000000FF;
+
+// Mode change masks
+const MODE_MASK: u32 = 0x1F;
+
 #[inline]
-/// Check if a condition passes based on the current CPSR flags
 pub fn check_condition(condition: &Condition, cpsr: u32) -> bool {
-    let n = (cpsr >> 31) & 1 == 1; // Negative
-    let z = (cpsr >> 30) & 1 == 1; // Zero
-    let c = (cpsr >> 29) & 1 == 1; // Carry
-    let v = (cpsr >> 28) & 1 == 1; // Overflow
+    let n = (cpsr & Flag::Negative as u32) != 0;
+    let z = (cpsr & Flag::Zero as u32) != 0;
+    let c = (cpsr & Flag::Carry as u32) != 0;
+    let v = (cpsr & Flag::Overflow as u32) != 0;
 
     match condition {
         Condition::EQ => z,              // Equal
@@ -34,7 +56,6 @@ pub fn check_condition(condition: &Condition, cpsr: u32) -> bool {
 }
 
 #[inline]
-/// Perform a barrel shifter operation and return (result, carry_out)
 pub fn barrel_shift(
     value: u32,
     shift_type: &ShiftType,
@@ -63,10 +84,20 @@ pub fn barrel_shift(
             }
         }
         ShiftType::Lsr => {
-            if shift_amount == 0 {
-                return (value, carry_in);
-            }
             // Logical shift right
+            // For immediate shifts, LSR #0 means LSR #32
+            // For register shifts, LSR Rs where Rs=0 means no shift
+            if shift_amount == 0 {
+                if is_immediate {
+                    // LSR #0 (immediate encoding) actually means LSR #32
+                    // Result is 0, carry is bit 31 of value
+                    return (0, (value >> 31) & 1 == 1);
+                } else {
+                    // LSR Rs where Rs=0 (register): no shift, preserve carry
+                    return (value, carry_in);
+                }
+            }
+            
             if shift_amount >= 32 {
                 (
                     0,
@@ -82,10 +113,22 @@ pub fn barrel_shift(
             }
         }
         ShiftType::Asr => {
-            if shift_amount == 0 {
-                return (value, carry_in);
-            }
             // Arithmetic shift right
+            // For immediate shifts, ASR #0 means ASR #32
+            // For register shifts, ASR Rs where Rs=0 means no shift
+            if shift_amount == 0 {
+                if is_immediate {
+                    // ASR #0 (immediate encoding) actually means ASR #32
+                    // Result is 0xFFFFFFFF (if negative) or 0 (if positive)
+                    // Carry is bit 31 of value
+                    let carry = value >> 31 == 1;
+                    return (if carry { 0xFFFFFFFF } else { 0 }, carry);
+                } else {
+                    // ASR Rs where Rs=0 (register): no shift, preserve carry
+                    return (value, carry_in);
+                }
+            }
+            
             if shift_amount >= 32 {
                 let carry = value >> 31 == 1;
                 (if carry { 0xFFFFFFFF } else { 0 }, carry)
@@ -123,7 +166,6 @@ pub fn barrel_shift(
 }
 
 #[inline]
-/// Evaluate Operand2 and return (value, shifter_carry_out)
 pub fn evaluate_operand2(
     operand2: &Operand2,
     registers: &Registers,
@@ -161,36 +203,30 @@ pub fn evaluate_operand2(
 }
 
 #[inline]
-/// Set CPSR flags based on the result of an operation
 pub fn set_nz_flags(registers: &mut Registers, result: u32) {
     registers.set_flag(Flag::Negative, (result as i32) < 0);
     registers.set_flag(Flag::Zero, result == 0);
 }
 
 #[inline]
-/// Set CPSR flags for addition operations
 pub fn set_flags_add(registers: &mut Registers, op1: u32, op2: u32, result: u32) {
     set_nz_flags(registers, result);
     // Carry: unsigned overflow
     registers.set_flag(Flag::Carry, result < op1);
-    // Overflow: signed overflow (both operands have same sign, result has different sign)
-    let overflow = ((op1 ^ result) & (op2 ^ result) & 0x8000_0000) != 0;
+    let overflow = ((op1 ^ result) & (op2 ^ result) & SIGN_BIT_MASK) != 0;
     registers.set_flag(Flag::Overflow, overflow);
 }
 
 #[inline]
-/// Set CPSR flags for subtraction operations
 pub fn set_flags_sub(registers: &mut Registers, op1: u32, op2: u32, result: u32) {
     set_nz_flags(registers, result);
     // Carry: NOT borrow (set if op1 >= op2)
     registers.set_flag(Flag::Carry, op1 >= op2);
-    // Overflow: signed overflow
-    let overflow = ((op1 ^ op2) & (op1 ^ result) & 0x8000_0000) != 0;
+    let overflow = ((op1 ^ op2) & (op1 ^ result) & SIGN_BIT_MASK) != 0;
     registers.set_flag(Flag::Overflow, overflow);
 }
 
 #[inline]
-/// Set CPSR flags for logical operations (including shifter carry)
 pub fn set_flags_logical(registers: &mut Registers, result: u32, carry: bool) {
     set_nz_flags(registers, result);
     registers.set_flag(Flag::Carry, carry);
@@ -201,24 +237,18 @@ pub fn set_flags_logical(registers: &mut Registers, result: u32, carry: bool) {
 /// Calculate the number of internal cycles for multiply operations
 /// based on the multiplier value (Rs)
 fn calculate_multiply_cycles(multiplier: u32) -> u32 {
-    // Check how many of the upper bits are the same (all 0s or all 1s)
-    // m = 1 if bits [8:31] are all 0 or all 1
-    // m = 2 if bits [16:31] are all 0 or all 1
-    // m = 3 if bits [24:31] are all 0 or all 1
-    // m = 4 otherwise
-
-    let upper_24 = multiplier & 0xFFFFFF00;
-    if upper_24 == 0 || upper_24 == 0xFFFFFF00 {
+    let upper_24 = multiplier & UPPER_24_BITS_MASK;
+    if upper_24 == 0 || upper_24 == UPPER_24_BITS_MASK {
         return 1;
     }
 
-    let upper_16 = multiplier & 0xFFFF0000;
-    if upper_16 == 0 || upper_16 == 0xFFFF0000 {
+    let upper_16 = multiplier & UPPER_16_BITS_MASK;
+    if upper_16 == 0 || upper_16 == UPPER_16_BITS_MASK {
         return 2;
     }
 
-    let upper_8 = multiplier & 0xFF000000;
-    if upper_8 == 0 || upper_8 == 0xFF000000 {
+    let upper_8 = multiplier & UPPER_8_BITS_MASK;
+    if upper_8 == 0 || upper_8 == UPPER_8_BITS_MASK {
         return 3;
     }
 
@@ -253,11 +283,12 @@ impl ARM7TDMI {
         rn: Register,
         addressing: &rustyboi_advance_debugger_lib::disassembler::AddressingMode,
         load_type: LoadType,
+        instruction_pc: u32,
         mmio: &mut memory::mmio::Mmio,
     ) -> u32 {
         use crate::memory::Addressable;
 
-        let (addr, writeback) = self.calculate_address(rn, addressing);
+        let (addr, writeback) = self.calculate_address(rn, addressing, instruction_pc);
 
         // Load value based on type
         let value = match load_type {
@@ -296,7 +327,7 @@ impl ARM7TDMI {
         // Writeback if needed
         // When Rd == Rn, the loaded value should take precedence
         if writeback {
-            let new_base = self.calculate_writeback_value(rn, addressing);
+            let new_base = self.calculate_writeback_value(rn, addressing, instruction_pc);
             self.registers.write_register(rn, new_base);
         }
 
@@ -325,13 +356,14 @@ impl ARM7TDMI {
         addressing: &rustyboi_advance_debugger_lib::disassembler::AddressingMode,
         store_type: StoreType,
         mmio: &mut memory::mmio::Mmio,
+        instruction_pc: u32,
     ) -> u32 {
         use crate::memory::Addressable;
 
         // When Rd == Rn with writeback, we must store the OLD value of the register
         let value = self.registers.read_register(rd);
 
-        let (addr, writeback) = self.calculate_address(rn, addressing);
+        let (addr, writeback) = self.calculate_address(rn, addressing, instruction_pc);
 
         // Store value based on type
         match store_type {
@@ -348,7 +380,7 @@ impl ARM7TDMI {
 
         // Writeback if needed
         if writeback {
-            let new_base = self.calculate_writeback_value(rn, addressing);
+            let new_base = self.calculate_writeback_value(rn, addressing, instruction_pc);
             self.registers.write_register(rn, new_base);
         }
 
@@ -357,7 +389,6 @@ impl ARM7TDMI {
     }
 
     #[inline]
-    /// Execute a data processing instruction
     pub fn execute_data_processing(
         &mut self,
         op: &DataProcessingOp,
@@ -380,19 +411,15 @@ impl ARM7TDMI {
         );
         
         let pc_as_operand = if uses_register_shift {
-            // Any register shift: +12 in ARM, +6 in Thumb
             if is_thumb {
-                instruction_pc.wrapping_add(6)
+                instruction_pc.wrapping_add(THUMB_PC_OFFSET_WITH_SHIFT)
             } else {
-                instruction_pc.wrapping_add(12)
+                instruction_pc.wrapping_add(ARM_PC_OFFSET_WITH_SHIFT)
             }
+        } else if is_thumb {
+            instruction_pc.wrapping_add(THUMB_PC_OFFSET)
         } else {
-            // Immediate shift or register/immediate operand: +8 in ARM, +4 in Thumb
-            if is_thumb {
-                instruction_pc.wrapping_add(4)
-            } else {
-                instruction_pc.wrapping_add(8)
-            }
+            instruction_pc.wrapping_add(ARM_PC_OFFSET)
         };
         
         // Temporarily set PC to the correct value for operand reads
@@ -556,8 +583,7 @@ impl ARM7TDMI {
             // Restore CPSR from SPSR but don't write to PC or branch
             let spsr = self.registers.get_spsr();
             self.registers.cpsr = spsr;
-            // After restoring CPSR, check if we need to update Thumb state
-            let new_thumb_state = (spsr & (1 << 5)) != 0;
+            let new_thumb_state = (spsr & Flag::ThumbState as u32) != 0;
             self.registers.set_flag(Flag::ThumbState, new_thumb_state);
             
             // Don't write result to any register, don't branch
@@ -576,8 +602,7 @@ impl ARM7TDMI {
                 if set_flags {
                     let spsr = self.registers.get_spsr();
                     self.registers.cpsr = spsr;
-                    // After restoring CPSR, check if we need to update Thumb state
-                    let new_thumb_state = (spsr & (1 << 5)) != 0;
+                    let new_thumb_state = (spsr & Flag::ThumbState as u32) != 0;
                     self.registers.set_flag(Flag::ThumbState, new_thumb_state);
                 }
                 
@@ -596,44 +621,36 @@ impl ARM7TDMI {
         }
 
         // Data processing instructions take 1S cycle (or 1S + 1N if shift by register)
-        match operand2 {
-            Operand2::RegisterShiftedByRegister { .. } => {
-                // Shift by register adds 1 internal cycle
-                self.add_internal_cycles(1);
-            }
-            _ => {}
+        if let Operand2::RegisterShiftedByRegister { .. } = operand2 {
+            // Shift by register adds 1 internal cycle
+            self.add_internal_cycles(1);
         }
 
-        1 // Base cycle count
+        1
     }
 
     #[inline]
-    /// Execute a branch instruction (B)
     pub fn execute_branch(&mut self, target: u32) -> u32 {
         self.branch_to(target);
-        0 // Cycles will be counted during pipeline flush/refill
+        0
     }
 
     #[inline]
-    /// Execute a branch with link instruction (BL)
     pub fn execute_branch_link(&mut self, target: u32, instruction_pc: u32) -> u32 {
         // Save return address in LR
         // Return address should point to the instruction after BL
         let is_thumb = self.registers.get_flag(Flag::ThumbState);
         let return_addr = if is_thumb {
-            // Thumb: next instruction is at instruction_pc + 2
-            instruction_pc.wrapping_add(2)
+            instruction_pc.wrapping_add(THUMB_INSTRUCTION_SIZE)
         } else {
-            // ARM: next instruction is at instruction_pc + 4
-            instruction_pc.wrapping_add(4)
+            instruction_pc.wrapping_add(ARM_INSTRUCTION_SIZE)
         };
         self.registers.set_lr(return_addr);
         self.branch_to(target);
-        0 // Cycles will be counted during pipeline flush/refill
+        0
     }
 
     #[inline]
-    /// Execute a branch and exchange instruction (BX)
     pub fn execute_branch_exchange(&mut self, rm: Register) -> u32 {
         let target = self.registers.read_register(rm);
 
@@ -649,7 +666,7 @@ impl ARM7TDMI {
             target & !0x3 // ARM mode - word align
         };
         self.branch_to(aligned_target);
-        0 // Cycles will be counted during pipeline flush/refill
+        0
     }
 
     #[inline]
@@ -672,10 +689,20 @@ impl ARM7TDMI {
         &mut self,
         rn: Register,
         addressing: &rustyboi_advance_debugger_lib::disassembler::AddressingMode,
+        instruction_pc: u32,
     ) -> (u32, bool) {
         use rustyboi_advance_debugger_lib::disassembler::AddressingMode;
 
-        let base = self.registers.read_register(rn);
+        let base = if rn == Register::PC {
+            let is_thumb = self.registers.get_flag(Flag::ThumbState);
+            if is_thumb {
+                (instruction_pc.wrapping_add(THUMB_PC_OFFSET)) & !3
+            } else {
+                instruction_pc.wrapping_add(ARM_PC_OFFSET)
+            }
+        } else {
+            self.registers.read_register(rn)
+        };
 
         match addressing {
             AddressingMode::Offset { offset, writeback } => {
@@ -722,10 +749,20 @@ impl ARM7TDMI {
         &mut self,
         rn: Register,
         addressing: &rustyboi_advance_debugger_lib::disassembler::AddressingMode,
+        instruction_pc: u32,
     ) -> u32 {
         use rustyboi_advance_debugger_lib::disassembler::AddressingMode;
 
-        let base = self.registers.read_register(rn);
+        let base = if rn == Register::PC {
+            let is_thumb = self.registers.get_flag(Flag::ThumbState);
+            if is_thumb {
+                (instruction_pc.wrapping_add(THUMB_PC_OFFSET)) & !3
+            } else {
+                instruction_pc.wrapping_add(ARM_PC_OFFSET)
+            }
+        } else {
+            self.registers.read_register(rn)
+        };
 
         match addressing {
             AddressingMode::Offset { offset, .. } => base.wrapping_add(*offset as u32),
@@ -754,7 +791,6 @@ impl ARM7TDMI {
         }
     }
 
-    /// Execute a load register instruction (LDR/LDRB)
     #[inline]
     pub fn execute_ldr(
         &mut self,
@@ -763,16 +799,16 @@ impl ARM7TDMI {
         addressing: &rustyboi_advance_debugger_lib::disassembler::AddressingMode,
         byte_access: bool,
         mmio: &mut memory::mmio::Mmio,
+        instruction_pc: u32,
     ) -> u32 {
         let load_type = if byte_access {
             LoadType::Byte
         } else {
             LoadType::Word
         };
-        self.execute_load_generic(rd, rn, addressing, load_type, mmio)
+        self.execute_load_generic(rd, rn, addressing, load_type, instruction_pc, mmio)
     }
 
-    /// Execute a store register instruction (STR/STRB)
     #[inline]
     pub fn execute_str(
         &mut self,
@@ -781,16 +817,16 @@ impl ARM7TDMI {
         addressing: &rustyboi_advance_debugger_lib::disassembler::AddressingMode,
         byte_access: bool,
         mmio: &mut memory::mmio::Mmio,
+        instruction_pc: u32,
     ) -> u32 {
         let store_type = if byte_access {
             StoreType::Byte
         } else {
             StoreType::Word
         };
-        self.execute_store_generic(rd, rn, addressing, store_type, mmio)
+        self.execute_store_generic(rd, rn, addressing, store_type, mmio, instruction_pc)
     }
 
-    /// Execute a load register halfword instruction (LDRH)
     #[inline]
     pub fn execute_ldrh(
         &mut self,
@@ -798,11 +834,11 @@ impl ARM7TDMI {
         rn: Register,
         addressing: &rustyboi_advance_debugger_lib::disassembler::AddressingMode,
         mmio: &mut memory::mmio::Mmio,
+        instruction_pc: u32,
     ) -> u32 {
-        self.execute_load_generic(rd, rn, addressing, LoadType::Halfword, mmio)
+        self.execute_load_generic(rd, rn, addressing, LoadType::Halfword, instruction_pc, mmio)
     }
 
-    /// Execute a store register halfword instruction (STRH)
     #[inline]
     pub fn execute_strh(
         &mut self,
@@ -810,11 +846,11 @@ impl ARM7TDMI {
         rn: Register,
         addressing: &rustyboi_advance_debugger_lib::disassembler::AddressingMode,
         mmio: &mut memory::mmio::Mmio,
+        instruction_pc: u32,
     ) -> u32 {
-        self.execute_store_generic(rd, rn, addressing, StoreType::Halfword, mmio)
+        self.execute_store_generic(rd, rn, addressing, StoreType::Halfword, mmio, instruction_pc)
     }
 
-    /// Execute a load register signed byte instruction (LDRSB)
     #[inline]
     pub fn execute_ldrsb(
         &mut self,
@@ -822,11 +858,11 @@ impl ARM7TDMI {
         rn: Register,
         addressing: &rustyboi_advance_debugger_lib::disassembler::AddressingMode,
         mmio: &mut memory::mmio::Mmio,
+        instruction_pc: u32,
     ) -> u32 {
-        self.execute_load_generic(rd, rn, addressing, LoadType::SignedByte, mmio)
+        self.execute_load_generic(rd, rn, addressing, LoadType::SignedByte, instruction_pc, mmio)
     }
 
-    /// Execute a load register signed halfword instruction (LDRSH)
     #[inline]
     pub fn execute_ldrsh(
         &mut self,
@@ -834,8 +870,9 @@ impl ARM7TDMI {
         rn: Register,
         addressing: &rustyboi_advance_debugger_lib::disassembler::AddressingMode,
         mmio: &mut memory::mmio::Mmio,
+        instruction_pc: u32,
     ) -> u32 {
-        self.execute_load_generic(rd, rn, addressing, LoadType::SignedHalfword, mmio)
+        self.execute_load_generic(rd, rn, addressing, LoadType::SignedHalfword, instruction_pc, mmio)
     }
 
     /// Execute SWP (Swap) instruction
@@ -887,7 +924,6 @@ impl ARM7TDMI {
         3
     }
 
-    /// Execute MRS (Move PSR to Register) instruction
     #[inline]
     pub fn execute_mrs(&mut self, rd: Register, spsr: bool) -> u32 {
         let value = if spsr {
@@ -920,26 +956,20 @@ impl ARM7TDMI {
             MsrOperand::Register(reg) => self.registers.read_register(*reg),
         };
 
-        // Create a mask based on which fields are being written
         let mut mask = 0u32;
         if fields.f {
-            // Flags field (bits 24-31)
-            mask |= 0xFF00_0000;
+            mask |= MSR_FLAGS_MASK;
         }
         if fields.s {
-            // Status field (bits 16-23)
-            mask |= 0x00FF_0000;
+            mask |= MSR_STATUS_MASK;
         }
         if fields.x {
-            // Extension field (bits 8-15)
-            mask |= 0x0000_FF00;
+            mask |= MSR_EXTENSION_MASK;
         }
         if fields.c {
-            // Control field (bits 0-7)
-            // Only allow mode changes in privileged modes
             let current_mode = self.registers.get_current_mode();
             if current_mode != crate::cpu::registers::Mode::User {
-                mask |= 0x0000_00FF;
+                mask |= MSR_CONTROL_MASK;
             }
         }
 
@@ -954,8 +984,8 @@ impl ARM7TDMI {
             let new_cpsr = (old_cpsr & !mask) | (value & mask);
 
             // Check if mode bits changed
-            let old_mode = old_cpsr & 0x1F;
-            let new_mode = new_cpsr & 0x1F;
+            let old_mode = old_cpsr & MODE_MASK;
+            let new_mode = new_cpsr & MODE_MASK;
 
             // Validate the new mode is legal
             if new_mode != old_mode && mask & 0x1F != 0 {
@@ -1474,7 +1504,7 @@ impl ARM7TDMI {
                 ..
             } => {
                 if check_condition(condition, self.registers.cpsr) {
-                    self.execute_ldr(*rd, *rn, addressing, *byte_access, mmio)
+                    self.execute_ldr(*rd, *rn, addressing, *byte_access, mmio, instruction_pc)
                 } else {
                     1 // Failed condition still takes 1S cycle
                 }
@@ -1489,7 +1519,7 @@ impl ARM7TDMI {
                 ..
             } => {
                 if check_condition(condition, self.registers.cpsr) {
-                    self.execute_str(*rd, *rn, addressing, *byte_access, mmio)
+                    self.execute_str(*rd, *rn, addressing, *byte_access, mmio, instruction_pc)
                 } else {
                     1 // Failed condition still takes 1S cycle
                 }
@@ -1567,7 +1597,7 @@ impl ARM7TDMI {
                 addressing,
             } => {
                 if check_condition(condition, self.registers.cpsr) {
-                    self.execute_ldrh(*rd, *rn, addressing, mmio)
+                    self.execute_ldrh(*rd, *rn, addressing, mmio, instruction_pc)
                 } else {
                     1 // Failed condition still takes 1S cycle
                 }
@@ -1580,7 +1610,7 @@ impl ARM7TDMI {
                 addressing,
             } => {
                 if check_condition(condition, self.registers.cpsr) {
-                    self.execute_strh(*rd, *rn, addressing, mmio)
+                    self.execute_strh(*rd, *rn, addressing, mmio, instruction_pc)
                 } else {
                     1 // Failed condition still takes 1S cycle
                 }
@@ -1593,7 +1623,7 @@ impl ARM7TDMI {
                 addressing,
             } => {
                 if check_condition(condition, self.registers.cpsr) {
-                    self.execute_ldrsb(*rd, *rn, addressing, mmio)
+                    self.execute_ldrsb(*rd, *rn, addressing, mmio, instruction_pc)
                 } else {
                     1 // Failed condition still takes 1S cycle
                 }
@@ -1606,7 +1636,7 @@ impl ARM7TDMI {
                 addressing,
             } => {
                 if check_condition(condition, self.registers.cpsr) {
-                    self.execute_ldrsh(*rd, *rn, addressing, mmio)
+                    self.execute_ldrsh(*rd, *rn, addressing, mmio, instruction_pc)
                 } else {
                     1 // Failed condition still takes 1S cycle
                 }

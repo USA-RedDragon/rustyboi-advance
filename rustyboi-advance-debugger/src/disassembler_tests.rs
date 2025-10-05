@@ -109,7 +109,7 @@ mod tests {
     fn test_register_creation() {
         // Test that both safe and optimized methods produce the same results
         for i in 0..16 {
-            let safe_reg = Register::from_u32_safe(i);
+            let safe_reg = Register::from_u32(i);
             let optimized_reg = Register::from_u32(i);
             assert_eq!(
                 safe_reg, optimized_reg,

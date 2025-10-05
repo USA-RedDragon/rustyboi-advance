@@ -193,6 +193,7 @@ impl PerModeRegister {
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
+#[repr(u32)]
 pub enum Flag {
     Negative = 1 << 31,  // Bit 31: N flag
     Zero = 1 << 30,      // Bit 30: Z flag
@@ -283,6 +284,7 @@ impl Registers {
         }
     }
 
+    #[inline]
     pub fn set_flag(&mut self, flag: Flag, value: bool) {
         if value {
             self.cpsr |= flag as u32;
@@ -291,6 +293,7 @@ impl Registers {
         }
     }
 
+    #[inline]
     pub fn get_flag(&self, flag: Flag) -> bool {
         (self.cpsr & (flag as u32)) != 0
     }
@@ -300,12 +303,12 @@ impl Registers {
         PerModeRegister::get_current_mode(self.cpsr)
     }
 
-    /// Get the current stack pointer value
+    #[inline]
     pub fn get_sp(&self) -> u32 {
         self.sp.read_current(self.cpsr)
     }
 
-    /// Set the current stack pointer value
+    #[inline]
     pub fn set_sp(&mut self, value: u32) {
         self.sp.write_current(self.cpsr, value);
     }
@@ -326,22 +329,22 @@ impl Registers {
         self.spsr.abt = value;
     }
 
-    /// Get the current link register value
+    #[inline]
     pub fn get_lr(&self) -> u32 {
         self.lr.read_current(self.cpsr)
     }
 
-    /// Set the current link register value
+    #[inline]
     pub fn set_lr(&mut self, value: u32) {
         self.lr.write_current(self.cpsr, value);
     }
 
-    /// Get the current SPSR value
+    #[inline]
     pub fn get_spsr(&self) -> u32 {
         self.spsr.read_current(self.cpsr)
     }
 
-    /// Set the current SPSR value
+    #[inline]
     pub fn set_spsr(&mut self, value: u32) {
         self.spsr.write_current(self.cpsr, value);
     }
@@ -361,7 +364,7 @@ impl Registers {
         CurrentModeRegisterAccess::new(&self.spsr, self.cpsr)
     }
 
-    /// Read a register value using the Register enum
+    #[inline]
     pub fn read_register(&self, reg: Register) -> u32 {
         match reg {
             Register::R0 => self.r0,
@@ -413,7 +416,7 @@ impl Registers {
         }
     }
 
-    /// Write a register value using the Register enum
+    #[inline]
     pub fn write_register(&mut self, reg: Register, value: u32) {
         match reg {
             Register::R0 => self.r0 = value,

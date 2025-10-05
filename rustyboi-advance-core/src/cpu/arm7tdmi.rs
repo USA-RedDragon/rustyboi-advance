@@ -1,6 +1,21 @@
-use crate::{cpu::registers, memory};
+use crate::{cpu::registers::{self, Flag}, memory};
 use rustyboi_advance_debugger_lib::disassembler::{Disassembler, Instruction};
 use serde::{Deserialize, Serialize};
+
+// Exception vector addresses
+const VECTOR_UNDEFINED: u32 = 0x00000004;
+const VECTOR_SWI: u32 = 0x00000008;
+const VECTOR_PREFETCH_ABORT: u32 = 0x0000000C;
+const VECTOR_DATA_ABORT: u32 = 0x00000010;
+const VECTOR_IRQ: u32 = 0x00000018;
+const VECTOR_FIQ: u32 = 0x0000001C;
+
+// Mode bits mask
+const MODE_BITS_MASK: u32 = 0x1F;
+
+// ARM/Thumb instruction sizes
+const ARM_INSTRUCTION_SIZE: u32 = 4;
+const THUMB_INSTRUCTION_SIZE: u32 = 2;
 
 /// Cycle types for ARM7TDMI timing
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +38,7 @@ pub enum PipelineStage {
 
 /// Pipeline instruction container
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct PipelineInstruction {
     pub instruction: Option<Instruction>,
     /// Program counter when this instruction was fetched
@@ -31,18 +47,10 @@ pub struct PipelineInstruction {
     pub is_thumb: bool,
 }
 
-impl Default for PipelineInstruction {
-    fn default() -> Self {
-        Self {
-            instruction: None,
-            pc: 0,
-            is_thumb: false,
-        }
-    }
-}
 
 /// Pipeline state for the ARM7TDMI 3-stage pipeline
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct Pipeline {
     /// Fetch stage - instruction currently being fetched
     pub fetch: Option<PipelineInstruction>,
@@ -54,16 +62,6 @@ pub struct Pipeline {
     pub flush_pending: bool,
 }
 
-impl Default for Pipeline {
-    fn default() -> Self {
-        Self {
-            fetch: None,
-            decode: None,
-            execute: None,
-            flush_pending: false,
-        }
-    }
-}
 
 /// Wait state configuration for different memory regions
 #[derive(Debug, Clone)]
@@ -292,8 +290,8 @@ impl ARM7TDMI {
             let decoded = Some(Disassembler::decode_thumb_opcode(
                 thumb_opcode,
                 pc,
-                |offset| {
-                    let word = (mmio as &dyn memory::Addressable).read32(pc + offset);
+                |addr| {
+                    let word = (mmio as &dyn memory::Addressable).read32(addr);
                     (word & 0xFFFF) as u16
                 },
             ));
@@ -341,15 +339,15 @@ impl ARM7TDMI {
             Some(Disassembler::decode_opcode(
                 execute_instr,
                 original_pc,
-                |offset| (mmio as &dyn memory::Addressable).read32(original_pc + offset),
+                |addr| (mmio as &dyn memory::Addressable).read32(addr),
             ))
         } else {
             let thumb_opcode = (execute_instr & 0xFFFF) as u16;
             Some(Disassembler::decode_thumb_opcode(
                 thumb_opcode,
                 original_pc,
-                |offset| {
-                    let word = (mmio as &dyn memory::Addressable).read32(original_pc + offset);
+                |addr| {
+                    let word = (mmio as &dyn memory::Addressable).read32(addr);
                     (word & 0xFFFF) as u16
                 },
             ))
@@ -367,15 +365,15 @@ impl ARM7TDMI {
             Some(Disassembler::decode_opcode(
                 decode_instr,
                 decode_pc,
-                |offset| (mmio as &dyn memory::Addressable).read32(decode_pc + offset),
+                |addr| (mmio as &dyn memory::Addressable).read32(addr),
             ))
         } else {
             let thumb_opcode = (decode_instr & 0xFFFF) as u16;
             Some(Disassembler::decode_thumb_opcode(
                 thumb_opcode,
                 decode_pc,
-                |offset| {
-                    let word = (mmio as &dyn memory::Addressable).read32(decode_pc + offset);
+                |addr| {
+                    let word = (mmio as &dyn memory::Addressable).read32(addr);
                     (word & 0xFFFF) as u16
                 },
             ))
@@ -393,15 +391,15 @@ impl ARM7TDMI {
             Some(Disassembler::decode_opcode(
                 fetch_instr,
                 fetch_pc,
-                |offset| (mmio as &dyn memory::Addressable).read32(fetch_pc + offset),
+                |addr| (mmio as &dyn memory::Addressable).read32(addr),
             ))
         } else {
             let thumb_opcode = (fetch_instr & 0xFFFF) as u16;
             Some(Disassembler::decode_thumb_opcode(
                 thumb_opcode,
                 fetch_pc,
-                |offset| {
-                    let word = (mmio as &dyn memory::Addressable).read32(fetch_pc + offset);
+                |addr| {
+                    let word = (mmio as &dyn memory::Addressable).read32(addr);
                     (word & 0xFFFF) as u16
                 },
             ))
@@ -462,14 +460,7 @@ impl ARM7TDMI {
         self.last_access_addr = None; // Next access won't be sequential
     }
 
-    /// Exception vector addresses
-    const VECTOR_RESET: u32 = 0x00000000;
-    const VECTOR_UNDEFINED: u32 = 0x00000004;
-    const VECTOR_SWI: u32 = 0x00000008;
-    const VECTOR_PREFETCH_ABORT: u32 = 0x0000000C;
-    const VECTOR_DATA_ABORT: u32 = 0x00000010;
-    const VECTOR_IRQ: u32 = 0x00000018;
-    const VECTOR_FIQ: u32 = 0x0000001C;
+
 
     /// Enter an exception
     /// This handles the state saving and mode switching for all exception types
@@ -488,52 +479,38 @@ impl ARM7TDMI {
         // Calculate return address based on exception type and current mode
         // In ARM mode, PC is 8 ahead; in Thumb mode, PC is 4 ahead
         let return_addr = match exception_vector {
-            Self::VECTOR_SWI | Self::VECTOR_UNDEFINED => {
-                // Return to the instruction after the SWI/undefined instruction
-                // ARM: PC is at SWI+8, want SWI+4, so PC-4
-                // Thumb: PC is at SWI+4, want SWI+2, so PC-2
+            VECTOR_SWI | VECTOR_UNDEFINED => {
                 if is_thumb {
-                    self.registers.pc.wrapping_sub(2)
+                    self.registers.pc.wrapping_sub(THUMB_INSTRUCTION_SIZE)
                 } else {
-                    self.registers.pc.wrapping_sub(4)
+                    self.registers.pc.wrapping_sub(ARM_INSTRUCTION_SIZE)
                 }
             }
-            Self::VECTOR_IRQ | Self::VECTOR_FIQ => {
-                // Return to the instruction that was interrupted
-                // The interrupted instruction hasn't executed yet
-                // ARM: PC is 8 ahead of interrupted instruction, so PC-4 to get back to it
-                // Thumb: PC is 4 ahead of interrupted instruction, so PC-2 to get back to it
+            VECTOR_IRQ | VECTOR_FIQ => {
                 if is_thumb {
-                    self.registers.pc.wrapping_sub(2)
+                    self.registers.pc.wrapping_sub(THUMB_INSTRUCTION_SIZE)
                 } else {
-                    self.registers.pc.wrapping_sub(4)
+                    self.registers.pc.wrapping_sub(ARM_INSTRUCTION_SIZE)
                 }
             }
-            Self::VECTOR_PREFETCH_ABORT => {
-                // Return to the instruction that caused the abort
-                // ARM: PC-4
-                // Thumb: PC-2
+            VECTOR_PREFETCH_ABORT => {
                 if is_thumb {
-                    self.registers.pc.wrapping_sub(2)
+                    self.registers.pc.wrapping_sub(THUMB_INSTRUCTION_SIZE)
                 } else {
-                    self.registers.pc.wrapping_sub(4)
+                    self.registers.pc.wrapping_sub(ARM_INSTRUCTION_SIZE)
                 }
             }
-            Self::VECTOR_DATA_ABORT => {
-                // Return to the instruction that caused the abort + 4
-                // So we can retry it after fixing the fault
-                // ARM: PC is already at faulting+8, so PC gives us faulting+8
-                // Thumb: PC is at faulting+4, so PC gives us faulting+4
+            VECTOR_DATA_ABORT => {
                 self.registers.pc
             }
             _ => self.registers.pc,
         };
 
         // Switch to the new mode
-        let new_cpsr = (current_cpsr & !0x1F) | (new_mode as u32);
-        let mut new_cpsr = new_cpsr | 0x80; // Disable IRQ (I bit)
+        let new_cpsr = (current_cpsr & !MODE_BITS_MASK) | (new_mode as u32);
+        let mut new_cpsr = new_cpsr | Flag::IrqDisable as u32;
         if disable_fiq {
-            new_cpsr |= 0x40; // Disable FIQ (F bit)
+            new_cpsr |= Flag::FiqDisable as u32;
         }
 
         // Set Thumb bit to 0 (exceptions always execute in ARM mode)
@@ -549,36 +526,33 @@ impl ARM7TDMI {
         self.branch_to(exception_vector);
     }
 
-    /// Software interrupt exception
     #[inline]
     pub fn software_interrupt(&mut self) {
         self.enter_exception(
-            Self::VECTOR_SWI,
+            VECTOR_SWI,
             registers::Mode::Service,
-            true,  // Disable IRQ
-            false, // Don't disable FIQ
+            true,
+            false,
         );
     }
 
-    /// IRQ exception
     #[inline]
     pub fn irq_exception(&mut self) {
         self.enter_exception(
-            Self::VECTOR_IRQ,
+            VECTOR_IRQ,
             registers::Mode::Irq,
-            true,  // Disable IRQ
-            false, // Don't disable FIQ
+            true,
+            false,
         );
     }
 
-    /// FIQ exception
     #[inline]
     pub fn fiq_exception(&mut self) {
         self.enter_exception(
-            Self::VECTOR_FIQ,
+            VECTOR_FIQ,
             registers::Mode::Fiq,
-            true, // Disable IRQ
-            true, // Disable FIQ
+            true,
+            true,
         );
     }
 
@@ -587,8 +561,8 @@ impl ARM7TDMI {
     #[inline]
     pub fn check_interrupts(&mut self, irq_pending: bool, fiq_pending: bool) -> bool {
         let cpsr = self.registers.cpsr;
-        let irq_disabled = (cpsr & 0x80) != 0; // I bit
-        let fiq_disabled = (cpsr & 0x40) != 0; // F bit
+        let irq_disabled = (cpsr & Flag::IrqDisable as u32) != 0;
+        let fiq_disabled = (cpsr & Flag::FiqDisable as u32) != 0;
 
         // FIQ has higher priority than IRQ
         if fiq_pending && !fiq_disabled {

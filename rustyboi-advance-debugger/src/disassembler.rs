@@ -1,5 +1,3 @@
-use std::u8;
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u8)]
 pub enum Register {
@@ -22,21 +20,8 @@ pub enum Register {
 }
 
 impl Register {
-    /// Safe version with bounds checking for debug builds
-    pub fn from_u32(reg: u32) -> Register {
-        debug_assert!(reg <= 15, "Invalid register number: {}", reg);
-        // Safety: ARM registers are always in range 0-15, and we validate in debug builds
-        unsafe { Register::from_u32_unchecked(reg) }
-    }
-
-    /// Unsafe version without bounds checking for performance-critical hotpath
     #[inline]
-    pub unsafe fn from_u32_unchecked(reg: u32) -> Register {
-        unsafe { std::mem::transmute(reg as u8) }
-    }
-
-    /// Fallback safe version (kept for compatibility)
-    pub fn from_u32_safe(reg: u32) -> Register {
+    pub fn from_u32(reg: u32) -> Register {
         match reg {
             0 => Register::R0,
             1 => Register::R1,
@@ -56,10 +41,6 @@ impl Register {
             15 => Register::PC,
             _ => panic!("Invalid register number: {}", reg),
         }
-    }
-
-    pub fn to_string(&self) -> String {
-        format!("{}", self)
     }
 }
 
@@ -530,8 +511,10 @@ impl MsrFields {
     pub fn is_empty(&self) -> bool {
         !self.c && !self.x && !self.s && !self.f
     }
+}
 
-    pub fn to_string(&self) -> String {
+impl std::fmt::Display for MsrFields {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut fields = String::new();
         if self.c {
             fields.push('C');
@@ -545,13 +528,7 @@ impl MsrFields {
         if self.f {
             fields.push('F');
         }
-        fields
-    }
-}
-
-impl std::fmt::Display for MsrFields {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_string())
+        write!(f, "{}", fields)
     }
 }
 
@@ -586,6 +563,25 @@ impl RegisterList {
 pub enum MsrOperand {
     Immediate(u32),
     Register(Register),
+}
+
+impl Instruction {
+    /// Returns the size of the instruction in bytes.
+    /// This is important for Thumb mode where most instructions are 2 bytes,
+    /// but BL (Branch with Link) is 4 bytes (32-bit).
+    pub fn size_bytes(&self, is_thumb: bool) -> u32 {
+        if is_thumb {
+            // In Thumb mode, BL is a 32-bit instruction (4 bytes)
+            // All other Thumb instructions are 16-bit (2 bytes)
+            match self {
+                Instruction::Bl { .. } => 4,
+                _ => 2,
+            }
+        } else {
+            // ARM mode instructions are always 32-bit (4 bytes)
+            4
+        }
+    }
 }
 
 impl std::fmt::Display for Instruction {
@@ -1024,7 +1020,7 @@ impl AddressingMode {
                     format!("[{}]{}", base, wb)
                 } else {
                     let sign = if *offset >= 0 { "" } else { "-" };
-                    let abs_offset = offset.abs() as u32;
+                    let abs_offset = offset.unsigned_abs();
                     format!("[{}, #{}{:#X}]{}", base, sign, abs_offset, wb)
                 }
             }
@@ -1051,7 +1047,7 @@ impl AddressingMode {
                     format!("[{}]", base)
                 } else {
                     let sign = if *offset >= 0 { "" } else { "-" };
-                    let abs_offset = offset.abs() as u32;
+                    let abs_offset = offset.unsigned_abs();
                     format!("[{}], #{}{:#X}", base, sign, abs_offset)
                 }
             }
@@ -1060,7 +1056,7 @@ impl AddressingMode {
                     format!("[{}]!", base)
                 } else {
                     let sign = if *offset >= 0 { "" } else { "-" };
-                    let abs_offset = offset.abs() as u32;
+                    let abs_offset = offset.unsigned_abs();
                     format!("[{}, #{}{:#X}]!", base, sign, abs_offset)
                 }
             }
@@ -1169,7 +1165,7 @@ impl Disassembler {
         F: FnMut(u32) -> u32,
     {
         let opcode = read_fn(addr);
-        Self::decode_opcode(opcode, addr, |offset| read_fn(addr + offset))
+        Self::decode_opcode(opcode, addr, read_fn)
     }
 
     /// Returns the mnemonic string for the instruction at the given address (Thumb mode)
@@ -1187,7 +1183,7 @@ impl Disassembler {
         F: FnMut(u32) -> u16,
     {
         let opcode = read_fn(addr);
-        Self::decode_thumb_opcode(opcode, addr, |offset| read_fn(addr + offset))
+        Self::decode_thumb_opcode(opcode, addr, read_fn)
     }
 
     /// Returns the mnemonic string for the given opcode (backward compatibility)
@@ -1292,21 +1288,32 @@ impl Disassembler {
             }
             0b011 => Self::decode_thumb_load_store_word_imm(opcode, condition),
             0b100 => {
-                if bits_15_12 == 0b1000 || bits_15_12 == 0b1001 {
+                if bits_15_12 == 0b1000 {
+                    // Format 8: Load/store halfword immediate
                     Self::decode_thumb_load_store_halfword_imm(opcode, condition)
+                } else if bits_15_12 == 0b1001 {
+                    // Format 11: SP-relative load/store
+                    Self::decode_thumb_load_store_stack(opcode, condition)
                 } else {
+                    // This shouldn't happen for valid THUMB instructions in this range
                     Self::decode_thumb_load_store_stack(opcode, condition)
                 }
             }
             0b101 => {
                 if bits_15_12 == 0b1010 || bits_15_12 == 0b1011 {
-                    if bits_15_8 >= 0b10110000 && bits_15_8 < 0b10110100 {
-                        Self::decode_thumb_add_sp_pc(opcode, pc, condition)
-                    } else if bits_15_8 == 0b10110000 {
+                    // Format 13 must be checked before Format 12 because they overlap
+                    if bits_15_8 == 0b10110000 {
+                        // Format 13: ADD/SUB SP, #imm (bits[15:8] = 0xB0)
                         Self::decode_thumb_adjust_sp(opcode, condition)
-                    } else if bits_15_8 >= 0b10110100 && bits_15_8 < 0b10111000 {
+                    } else if (0b10110001..=0b10110011).contains(&bits_15_8) {
+                        // Format 12: ADD Rd, SP, #imm (bits[15:8] = 0xB1-0xB3)
+                        Self::decode_thumb_add_sp_pc(opcode, pc, condition)
+                    } else if (0b10110100..=0b10110111).contains(&bits_15_8) || 
+                              (0b10111100..=0b10111111).contains(&bits_15_8) {
+                        // Format 14: PUSH/POP (bits[15:8] = 0xB4-0xB7 for PUSH, 0xBC-0xBF for POP)
                         Self::decode_thumb_push_pop(opcode, condition)
                     } else {
+                        // Format 12: ADD Rd, PC, #imm (bits[15:8] = 0xA0-0xAF)
                         Self::decode_thumb_add_sp_pc(opcode, pc, condition)
                     }
                 } else {
@@ -1314,13 +1321,15 @@ impl Disassembler {
                 }
             }
             0b110 => {
-                if bits_15_12 == 0b1100 || bits_15_12 == 0b1101 {
-                    if bits_15_8 < 0b11011111 {
-                        Self::decode_thumb_conditional_branch(opcode, pc, condition)
-                    } else if bits_15_8 == 0b11011111 {
+                if bits_15_12 == 0b1100 {
+                    // Format 15: Multiple load/store (0xC000-0xCFFF)
+                    Self::decode_thumb_load_store_multiple(opcode, condition)
+                } else if bits_15_12 == 0b1101 {
+                    // Format 16: Conditional branch (0xD000-0xDEFF) or SWI (0xDF00-0xDFFF)
+                    if bits_15_8 == 0b11011111 {
                         Self::decode_thumb_swi(opcode, condition)
                     } else {
-                        Self::decode_thumb_load_store_multiple(opcode, condition)
+                        Self::decode_thumb_conditional_branch(opcode, pc, condition)
                     }
                 } else {
                     Self::decode_thumb_load_store_multiple(opcode, condition)
@@ -1634,7 +1643,7 @@ impl Disassembler {
                 }
             } else {
                 // Post-indexed register offset - convert to equivalent form
-                let offset = if u_bit != 0 { 0 } else { 0 }; // Placeholder - actual implementation would need register resolution
+                let offset = 0; // Placeholder - actual implementation would need register resolution
                 AddressingMode::PostIndexed { offset }
             }
         };
@@ -1687,15 +1696,14 @@ impl Disassembler {
         let operand2 = Self::decode_operand2_struct(opcode);
 
         // Check for ADR pseudo-instruction (MOV with PC as source)
-        if matches!(op, DataProcessingOp::Mov) && rn == 15 && (opcode & (1 << 25)) != 0 {
-            if let Some(abs_addr) = Self::try_decode_adr(opcode, pc, &mut read_fn) {
+        if matches!(op, DataProcessingOp::Mov) && rn == 15 && (opcode & (1 << 25)) != 0
+            && let Some(abs_addr) = Self::try_decode_adr(opcode, pc, &mut read_fn) {
                 return Instruction::Adr {
                     condition,
                     rd: Register::from_u32(rd),
                     target: abs_addr,
                 };
             }
-        }
 
         let (rn_reg, rd_reg) = Self::get_data_processing_registers(&op, rd, rn);
 
@@ -1721,15 +1729,13 @@ impl Disassembler {
 
         // Check for ADR pseudo-instruction
         if (matches!(op, DataProcessingOp::Add) || matches!(op, DataProcessingOp::Sub)) && rn == 15
-        {
-            if let Some(abs_addr) = Self::try_decode_adr_immediate(opcode, pc) {
+            && let Some(abs_addr) = Self::try_decode_adr_immediate(opcode, pc) {
                 return Instruction::Adr {
                     condition,
                     rd: Register::from_u32(rd),
                     target: abs_addr,
                 };
             }
-        }
 
         let (rn_reg, rd_reg) = Self::get_data_processing_registers(&op, rd, rn);
 
@@ -1805,7 +1811,7 @@ impl Disassembler {
 
         // Calculate target address for PC-relative addressing
         let target_addr = if rn == 15 && i_bit == 0 && p_bit != 0 {
-            let offset = (opcode & 0xFFF) as u32;
+            let offset = opcode & 0xFFF;
             let effective_pc = pc + 8;
             let abs_addr = if u_bit != 0 {
                 effective_pc + offset
@@ -2242,8 +2248,8 @@ impl Disassembler {
         let op = (opcode >> 8) & 0b11;
         let h1 = (opcode >> 7) & 1;
         let h2 = (opcode >> 6) & 1;
-        let rs_hs = ((opcode >> 3) & 0x7) | ((h2 << 3) as u16);
-        let rd_hd = (opcode & 0x7) | ((h1 << 3) as u16);
+        let rs_hs = ((opcode >> 3) & 0x7) | (h2 << 3);
+        let rd_hd = (opcode & 0x7) | (h1 << 3);
 
         // BX/BLX
         if op == 0b11 {
@@ -2504,11 +2510,11 @@ impl Disassembler {
             None
         };
 
-        if target_addr.is_some() {
+        if let Some(target) = target_addr {
             Instruction::Adr {
                 condition,
                 rd: Register::from_u32(rd as u32),
-                target: target_addr.unwrap(),
+                target,
             }
         } else {
             Instruction::DataProcessing {
@@ -2550,7 +2556,7 @@ impl Disassembler {
         let r_bit = (opcode >> 8) & 1;
         let rlist = opcode & 0xFF;
 
-        let mut register_mask = rlist as u16;
+        let mut register_mask = rlist;
 
         // Add PC (for POP) or LR (for PUSH) if R bit is set
         if r_bit != 0 {
@@ -2591,7 +2597,7 @@ impl Disassembler {
         let rb = (opcode >> 8) & 0x7;
         let rlist = opcode & 0xFF;
 
-        let registers = RegisterList::from_mask(rlist as u16);
+        let registers = RegisterList::from_mask(rlist);
 
         if l_bit != 0 {
             Instruction::Ldm {
@@ -2673,38 +2679,56 @@ impl Disassembler {
     where
         F: FnMut(u32) -> u16,
     {
-        let h_bit = (opcode >> 11) & 1;
+        let bits_15_11 = (opcode >> 11) & 0b11111;
         let offset11 = opcode & 0x7FF;
 
-        if h_bit == 0 {
-            // First half: This is just setup, not a complete instruction
-            // Sign extend the 11-bit value to 23 bits (shifted left by 12)
-            let offset_high = if (offset11 & 0x400) != 0 {
-                // Sign extend by setting upper bits
-                (offset11 as i32 | 0xFFFFF800u32 as i32) << 12
+        if bits_15_11 == 0b11110 {
+            // First half (H=0): Read ahead to get the second half and construct the full BL instruction
+            let next_opcode = read_fn(pc.wrapping_add(2));
+            
+            // Check if next instruction is BL second half (bits [15:11] should be 0b11111)
+            let next_bits_15_11 = (next_opcode >> 11) & 0b11111;
+            if next_bits_15_11 == 0b11111 {
+                // Extract offsets from both halves
+                let offset_high = offset11;
+                let offset_low = next_opcode & 0x7FF;
+                
+                // Sign extend the 11-bit high value to 23 bits (shifted left by 12)
+                let sign_extended_high = if (offset_high & 0x400) != 0 {
+                    (offset_high as i32 | 0xFFFFF800u32 as i32) << 12
+                } else {
+                    (offset_high as i32) << 12
+                };
+                
+                // Combine: offset = sign_extend(offset_high:offset_low:0)
+                // Note: offset_low is shifted by 1, not combined with sign_extended_high
+                let offset = sign_extended_high + ((offset_low as i32) << 1);
+                
+                // Target address calculation:
+                // In Thumb mode, PC for BL is ((address of first instruction & ~2) + 4)
+                // However, instructions are always aligned in Thumb, so just add 4
+                // But the actual formula from ARM docs: target = PC + offset where PC = addr_of_BL + 4
+                // and the offset calculation makes the final address word-aligned (bit 1 is always 0 from the << 1)
+                let base_pc = pc + 4;
+                let target = (base_pc as i32 + offset) as u32;
+                
+                Instruction::Bl { condition, target }
             } else {
-                (offset11 as i32) << 12
-            };
-            
-            // Store intermediate value - for disassembly we can show this as a pseudo-op
-            let lr_value = (pc as i32).wrapping_add(4).wrapping_add(offset_high) as u32;
-            
-            // Represent as a pseudo-instruction
-            Instruction::DataProcessing {
-                op: DataProcessingOp::Mov,
-                condition,
-                set_flags: false,
-                rn: None,
-                rd: Some(Register::LR),
-                operand2: Operand2::Immediate { value: lr_value & 0xFFC00000, rotation: 0 }, // High 11 bits
+                // Invalid: first half without second half
+                Instruction::Unknown {
+                    condition,
+                    opcode: opcode as u32,
+                }
             }
-        } else {
-            // Second half: Complete the BL instruction
-            // We need to read the previous instruction to get the full offset
+        } else if bits_15_11 == 0b11111 {
+            // Second half (H=1): This should have been handled when we decoded the first half
+            // If we're here, it means we're decoding the second half in isolation
+            // Try to look back to see if there's a first half
             let prev_opcode = read_fn(pc.wrapping_sub(2));
             
-            // Check if previous instruction was BL first half
-            if (prev_opcode >> 11) == 0b11110 {
+            // Check if previous instruction was BL first half (bits [15:11] should be 0b11110)
+            let prev_bits_15_11 = (prev_opcode >> 11) & 0b11111;
+            if prev_bits_15_11 == 0b11110 {
                 // Extract offsets from both halves
                 let offset_high = prev_opcode & 0x7FF;
                 let offset_low = offset11;
@@ -2717,10 +2741,11 @@ impl Disassembler {
                 };
                 
                 // Combine: offset = sign_extend(offset_high:offset_low:0)
-                let offset = sign_extended_high | ((offset_low as i32) << 1);
+                let offset = sign_extended_high + ((offset_low as i32) << 1);
                 
-                // Target address is PC + 4 + offset (PC already points to this instruction + 4)
-                let target = (pc as i32).wrapping_add(4).wrapping_add(offset) as u32;
+                // Target address is calculated from the first half's address
+                // PC for the first instruction is (current PC - 2), then add 4 for PC offset
+                let target = ((pc - 2 + 4) as i32 + offset) as u32;
                 
                 Instruction::Bl { condition, target }
             } else {
@@ -2729,6 +2754,12 @@ impl Disassembler {
                     condition,
                     opcode: opcode as u32,
                 }
+            }
+        } else {
+            // Invalid: not a BL instruction (bits [15:11] should be 11110 or 11111)
+            Instruction::Unknown {
+                condition,
+                opcode: opcode as u32,
             }
         }
     }

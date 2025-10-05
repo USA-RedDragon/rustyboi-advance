@@ -45,7 +45,7 @@ pub enum CpuModeSelection {
 }
 
 impl CpuModeSelection {
-    pub fn to_mode(&self, current_mode: cpu::registers::Mode) -> cpu::registers::Mode {
+    pub fn to_mode(self, current_mode: cpu::registers::Mode) -> cpu::registers::Mode {
         match self {
             CpuModeSelection::Auto => current_mode,
             CpuModeSelection::User => cpu::registers::Mode::User,

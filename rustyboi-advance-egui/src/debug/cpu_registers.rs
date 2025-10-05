@@ -358,7 +358,6 @@ impl Gui {
                     while instruction_count < MAX_INSTRUCTIONS {
                         // ARM/Thumb instruction length depends on CPU state
                         let is_thumb = regs.get_flag(cpu::registers::Flag::ThumbState);
-                        let instruction_length = if is_thumb { 2 } else { 4 }; // Thumb=16bit, ARM=32bit
 
                         // Use the appropriate decoder based on CPU state
                         let instruction = if is_thumb {
@@ -379,6 +378,9 @@ impl Gui {
                             })
                         };
 
+                        // Get the actual instruction length (important for Thumb BL which is 4 bytes)
+                        let instruction_length = instruction.size_bytes(is_thumb);
+
                         // Convert to string for display (still backward compatible)
                         let mnemonic = instruction.to_string();
 
@@ -392,20 +394,20 @@ impl Gui {
 
                         let marker = if addr == display_pc { "→" } else { " " };
 
-                        // Show instruction bytes based on ARM/Thumb state
-                        let bytes = if is_thumb {
-                            // Thumb: 16-bit instruction
-                            format!(
-                                "{:02X}{:02X}",
-                                gba_ref.read_memory(addr + 1),
-                                gba_ref.read_memory(addr)
-                            )
-                        } else {
-                            // ARM: 32-bit instruction
+                        // Show instruction bytes based on ARM/Thumb state and actual instruction length
+                        let bytes = if instruction_length == 4 {
+                            // 32-bit instruction (ARM mode or Thumb BL)
                             format!(
                                 "{:02X}{:02X}{:02X}{:02X}",
                                 gba_ref.read_memory(addr + 3),
                                 gba_ref.read_memory(addr + 2),
+                                gba_ref.read_memory(addr + 1),
+                                gba_ref.read_memory(addr)
+                            )
+                        } else {
+                            // 16-bit instruction (Thumb mode)
+                            format!(
+                                "{:02X}{:02X}    ",
                                 gba_ref.read_memory(addr + 1),
                                 gba_ref.read_memory(addr)
                             )
