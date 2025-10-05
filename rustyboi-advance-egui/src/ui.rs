@@ -26,8 +26,37 @@ pub struct Gui {
     // Button hold state tracking
     pub(super) step_cycles_held_frames: u32,
     pub(super) step_frames_held_frames: u32,
+    // CPU register view mode selection
+    pub(super) selected_cpu_mode: CpuModeSelection,
     // File dialog result tracking
     pending_dialog_result: Arc<Mutex<Option<GuiAction>>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CpuModeSelection {
+    Auto,
+    User,
+    Fiq,
+    Irq,
+    Service,
+    Abort,
+    Undefined,
+    System,
+}
+
+impl CpuModeSelection {
+    pub fn to_mode(&self, current_mode: cpu::registers::Mode) -> cpu::registers::Mode {
+        match self {
+            CpuModeSelection::Auto => current_mode,
+            CpuModeSelection::User => cpu::registers::Mode::User,
+            CpuModeSelection::Fiq => cpu::registers::Mode::Fiq,
+            CpuModeSelection::Irq => cpu::registers::Mode::Irq,
+            CpuModeSelection::Service => cpu::registers::Mode::Service,
+            CpuModeSelection::Abort => cpu::registers::Mode::Abort,
+            CpuModeSelection::Undefined => cpu::registers::Mode::Undefined,
+            CpuModeSelection::System => cpu::registers::Mode::System,
+        }
+    }
 }
 
 impl Default for Gui {
@@ -55,6 +84,7 @@ impl Gui {
             step_count: 1,
             step_cycles_held_frames: 0,
             step_frames_held_frames: 0,
+            selected_cpu_mode: CpuModeSelection::Auto,
             pending_dialog_result: Arc::new(Mutex::new(None)),
         }
     }

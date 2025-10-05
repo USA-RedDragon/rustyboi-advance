@@ -23,6 +23,48 @@ impl Gui {
                 .resizable(true)
                 .frame(egui::Frame::window(&ctx.style()).fill(crate::ui::PANEL_BACKGROUND))
                 .show(ctx, |ui| {
+                    // CPU Mode selection radio buttons
+                    ui.small(
+                        egui::RichText::new("CPU Mode View:").color(egui::Color32::LIGHT_GRAY),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut self.selected_cpu_mode, crate::ui::CpuModeSelection::Auto, "Auto");
+                        ui.radio_value(&mut self.selected_cpu_mode, crate::ui::CpuModeSelection::User, "USR");
+                        ui.radio_value(&mut self.selected_cpu_mode, crate::ui::CpuModeSelection::System, "SYS");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut self.selected_cpu_mode, crate::ui::CpuModeSelection::Fiq, "FIQ");
+                        ui.radio_value(&mut self.selected_cpu_mode, crate::ui::CpuModeSelection::Irq, "IRQ");
+                        ui.radio_value(&mut self.selected_cpu_mode, crate::ui::CpuModeSelection::Service, "SVC");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut self.selected_cpu_mode, crate::ui::CpuModeSelection::Abort, "ABT");
+                        ui.radio_value(&mut self.selected_cpu_mode, crate::ui::CpuModeSelection::Undefined, "UND");
+                    });
+                    ui.separator();
+
+                    // Determine which mode to display
+                    let current_mode = cpu::registers::Mode::from(regs.cpsr);
+                    let display_mode = self.selected_cpu_mode.to_mode(current_mode);
+
+                    // Show indicator if viewing a different mode than current
+                    if self.selected_cpu_mode != crate::ui::CpuModeSelection::Auto {
+                        let mode_str = match display_mode {
+                            cpu::registers::Mode::User => "User",
+                            cpu::registers::Mode::Fiq => "FIQ",
+                            cpu::registers::Mode::Irq => "IRQ",
+                            cpu::registers::Mode::Service => "Supervisor",
+                            cpu::registers::Mode::Abort => "Abort",
+                            cpu::registers::Mode::Undefined => "Undefined",
+                            cpu::registers::Mode::System => "System",
+                        };
+                        ui.small(
+                            egui::RichText::new(format!("⚠ Viewing {} mode registers", mode_str))
+                                .color(egui::Color32::YELLOW),
+                        );
+                        ui.separator();
+                    }
+
                     // ARM7TDMI General Purpose Registers (R0-R12)
                     ui.small(
                         egui::RichText::new("General Registers:").color(egui::Color32::LIGHT_GRAY),
@@ -62,16 +104,14 @@ impl Gui {
                         egui::RichText::new("Special Registers:").color(egui::Color32::LIGHT_GRAY),
                     );
 
-                    // Get current CPU mode for SP/LR display
-                    let current_mode = cpu::registers::Mode::from(regs.cpsr);
-
-                    let current_sp = regs.sp();
-                    let current_lr = regs.lr();
+                    // Get SP and LR for the selected mode
+                    let display_sp = regs.sp.read(display_mode);
+                    let display_lr = regs.lr.read(display_mode);
 
                     ui.monospace(
                         egui::RichText::new(format!(
                             "SP: {:08X}  LR: {:08X}",
-                            current_sp, current_lr
+                            display_sp, display_lr
                         ))
                         .color(egui::Color32::LIGHT_BLUE),
                     );
@@ -146,8 +186,8 @@ impl Gui {
                                 }),
                         );
 
-                        // Show current CPU mode
-                        let mode_str = match current_mode {
+                        // Show current CPU mode (from CPSR, not the display mode)
+                        let current_mode_str = match current_mode {
                             cpu::registers::Mode::User => "USR",
                             cpu::registers::Mode::Fiq => "FIQ",
                             cpu::registers::Mode::Irq => "IRQ",
@@ -157,7 +197,7 @@ impl Gui {
                             cpu::registers::Mode::System => "SYS",
                         };
                         ui.monospace(
-                            egui::RichText::new(format!("Mode:{}", mode_str))
+                            egui::RichText::new(format!("Mode:{}", current_mode_str))
                                 .color(egui::Color32::LIGHT_YELLOW),
                         );
                     });
