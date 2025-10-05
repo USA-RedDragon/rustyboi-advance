@@ -368,13 +368,13 @@ impl ARM7TDMI {
         // Store value based on type
         match store_type {
             StoreType::Word => {
-                (mmio as &mut dyn Addressable).write32(addr & !0x3, value);
+                mmio.write32(addr & !0x3, value);
             }
             StoreType::Byte => {
-                (mmio as &mut dyn Addressable).write(addr, value as u8);
+                mmio.write(addr, value as u8);
             }
             StoreType::Halfword => {
-                (mmio as &mut dyn Addressable).write16(addr & !0x1, value as u16);
+                mmio.write16(addr & !0x1, value as u16);
             }
         }
 

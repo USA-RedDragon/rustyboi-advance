@@ -129,6 +129,8 @@ impl Mmio {
     }
 }
 
+
+
 impl memory::Addressable for Mmio {
     fn read(&self, addr: u32) -> u8 {
         match addr {
@@ -139,26 +141,49 @@ impl memory::Addressable for Mmio {
                     EMPTY_BYTE
                 }
             }
-            WRAM_BOARD_START..=WRAM_BOARD_END => self.wram_board.read(addr),
-            WRAM_CHIP_START..=WRAM_CHIP_END => self.wram_chip.read(addr),
-            IO_REGISTERS_START..=IO_REGISTERS_END => self.io_registers.read(addr),
-            PALETTE_RAM_START..=PALETTE_RAM_END => self.palette_ram.read(addr),
-            VRAM_START..=VRAM_END => self.vram.read(addr),
-            OAM_START..=OAM_END => self.oam.read(addr),
-            GAME_PAK_ROM_WAIT_STATE_0_START..=GAME_PAK_ROM_WAIT_STATE_0_END => {
-                if let Some(cart) = &self.cartridge {
-                    cart.read(addr)
+            // WRAM Board - 256KB mirrored every 256KB in 0x02000000-0x02FFFFFF
+            0x02000000..=0x02FFFFFF => {
+                let mirrored_addr = WRAM_BOARD_START + (addr & (WRAM_BOARD_SIZE as u32 - 1));
+                self.wram_board.read(mirrored_addr)
+            }
+            // WRAM Chip - 32KB mirrored every 32KB in 0x03000000-0x03FFFFFF  
+            0x03000000..=0x03FFFFFF => {
+                let mirrored_addr = WRAM_CHIP_START + (addr & (WRAM_CHIP_SIZE as u32 - 1));
+                self.wram_chip.read(mirrored_addr)
+            }
+            // I/O Registers - mirrored every 1KB in 0x04000000-0x04FFFFFF
+            0x04000000..=0x04FFFFFF => {
+                let offset = addr & 0x3FF; // Mirror every 1KB
+                if offset <= (IO_REGISTERS_END - IO_REGISTERS_START) {
+                    self.io_registers.read(IO_REGISTERS_START + offset)
                 } else {
                     EMPTY_BYTE
                 }
             }
-            GAME_PAK_ROM_WAIT_STATE_1_START..=GAME_PAK_ROM_WAIT_STATE_1_END => {
-                if let Some(cart) = &self.cartridge {
-                    cart.read(addr)
+            // Palette RAM - 1KB mirrored every 1KB in 0x05000000-0x05FFFFFF
+            0x05000000..=0x05FFFFFF => {
+                let mirrored_addr = PALETTE_RAM_START + (addr & (PALETTE_RAM_SIZE as u32 - 1));
+                self.palette_ram.read(mirrored_addr)
+            }
+            // VRAM - 96KB with complex mirroring in 0x06000000-0x06FFFFFF
+            0x06000000..=0x06FFFFFF => {
+                let offset = addr & 0x1FFFF; // 128KB address space
+                if offset < VRAM_SIZE as u32 {
+                    self.vram.read(VRAM_START + offset)
                 } else {
-                    EMPTY_BYTE
+                    // Mirror the upper 32KB region
+                    let mirrored_offset = offset & 0x17FFF; // Mirror within 96KB
+                    self.vram.read(VRAM_START + mirrored_offset)
                 }
             }
+            // OAM - 1KB mirrored every 1KB in 0x07000000-0x07FFFFFF
+            0x07000000..=0x07FFFFFF => {
+                let mirrored_addr = OAM_START + (addr & (OAM_SIZE as u32 - 1));
+                self.oam.read(mirrored_addr)
+            }
+            // Game Pak ROM regions - all mirror the same cartridge data
+            GAME_PAK_ROM_WAIT_STATE_0_START..=GAME_PAK_ROM_WAIT_STATE_0_END |
+            GAME_PAK_ROM_WAIT_STATE_1_START..=GAME_PAK_ROM_WAIT_STATE_1_END |
             GAME_PAK_ROM_WAIT_STATE_2_START..=GAME_PAK_ROM_WAIT_STATE_2_END => {
                 if let Some(cart) = &self.cartridge {
                     cart.read(addr)
@@ -179,18 +204,167 @@ impl memory::Addressable for Mmio {
 
     fn write(&mut self, addr: u32, value: u8) {
         match addr {
-            WRAM_BOARD_START..=WRAM_BOARD_END => self.wram_board.write(addr, value),
-            WRAM_CHIP_START..=WRAM_CHIP_END => self.wram_chip.write(addr, value),
-            IO_REGISTERS_START..=IO_REGISTERS_END => self.io_registers.write(addr, value),
-            PALETTE_RAM_START..=PALETTE_RAM_END => self.palette_ram.write(addr, value),
-            VRAM_START..=VRAM_END => self.vram.write(addr, value),
-            OAM_START..=OAM_END => self.oam.write(addr, value),
+            // WRAM Board - 256KB mirrored every 256KB in 0x02000000-0x02FFFFFF
+            0x02000000..=0x02FFFFFF => {
+                let mirrored_addr = WRAM_BOARD_START + (addr & (WRAM_BOARD_SIZE as u32 - 1));
+                self.wram_board.write(mirrored_addr, value);
+            }
+            // WRAM Chip - 32KB mirrored every 32KB in 0x03000000-0x03FFFFFF
+            0x03000000..=0x03FFFFFF => {
+                let mirrored_addr = WRAM_CHIP_START + (addr & (WRAM_CHIP_SIZE as u32 - 1));
+                self.wram_chip.write(mirrored_addr, value);
+            }
+            // I/O Registers - mirrored every 1KB in 0x04000000-0x04FFFFFF
+            0x04000000..=0x04FFFFFF => {
+                let offset = addr & 0x3FF; // Mirror every 1KB
+                if offset <= (IO_REGISTERS_END - IO_REGISTERS_START) {
+                    self.io_registers.write(IO_REGISTERS_START + offset, value);
+                }
+            }
+            // Palette RAM - byte writes duplicate to both bytes of halfword
+            0x05000000..=0x05FFFFFF => {
+                let mirrored_addr = PALETTE_RAM_START + (addr & (PALETTE_RAM_SIZE as u32 - 1));
+                let aligned_addr = mirrored_addr & !1;
+                self.palette_ram.write(aligned_addr, value);
+                self.palette_ram.write(aligned_addr + 1, value);
+            }
+            // VRAM - byte writes have special behavior based on display mode
+            0x06000000..=0x06FFFFFF => {
+                let offset = addr & 0x1FFFF;
+                let actual_offset = if offset < VRAM_SIZE as u32 {
+                    offset
+                } else {
+                    offset & 0x17FFF
+                };
+                let actual_addr = VRAM_START + actual_offset;
+                
+                // Get display mode from DISPCNT register
+                let dispcnt = (self.io_registers.read(IO_REGISTERS_START + 1) as u16) << 8 | 
+                             (self.io_registers.read(IO_REGISTERS_START) as u16);
+                let display_mode = dispcnt & 0x7;
+                
+                match display_mode {
+                    3 | 4 | 5 => {
+                        // In bitmap modes, byte writes to VRAM duplicate the byte
+                        if actual_offset >= 0x14000 {
+                            return; // Ignore writes beyond valid range
+                        }
+                        let aligned_addr = actual_addr & !1;
+                        self.vram.write(aligned_addr, value);
+                        self.vram.write(aligned_addr + 1, value);
+                    }
+                    0 | 1 | 2 => {
+                        // In tiled modes, byte writes to VRAM also duplicate
+                        if actual_offset >= 0x10000 {
+                            return; // Ignore writes beyond valid range
+                        }
+                        let aligned_addr = actual_addr & !1;
+                        self.vram.write(aligned_addr, value);
+                        self.vram.write(aligned_addr + 1, value);
+                    }
+                    _ => {
+                        // For other modes, treat as normal
+                        if actual_offset >= 0x10000 {
+                            return;
+                        }
+                        let aligned_addr = actual_addr & !1;
+                        self.vram.write(aligned_addr, value);
+                        self.vram.write(aligned_addr + 1, value);
+                    }
+                }
+            }
+            // OAM - byte writes are ignored (GBA hardware quirk)
+            0x07000000..=0x07FFFFFF => {
+                // Ignore byte writes to OAM
+            }
             GAME_PAK_RAM_START..=GAME_PAK_RAM_END => {
                 if let Some(cart) = &mut self.cartridge {
                     cart.write(addr, value);
                 }
             }
             _ => {}
+        }
+    }
+}
+
+impl Mmio {
+    /// Write 16-bit value (for STRH instruction)
+    pub fn write16(&mut self, addr: u32, value: u16) {
+        match addr {
+            // Palette RAM with mirroring
+            0x05000000..=0x05FFFFFF => {
+                let mirrored_addr = PALETTE_RAM_START + (addr & (PALETTE_RAM_SIZE as u32 - 1));
+                self.palette_ram.write(mirrored_addr, (value & 0xFF) as u8);
+                self.palette_ram.write(mirrored_addr + 1, ((value >> 8) & 0xFF) as u8);
+            }
+            // VRAM with mirroring
+            0x06000000..=0x06FFFFFF => {
+                let offset = addr & 0x1FFFF;
+                if offset < VRAM_SIZE as u32 {
+                    self.vram.write(VRAM_START + offset, (value & 0xFF) as u8);
+                    self.vram.write(VRAM_START + offset + 1, ((value >> 8) & 0xFF) as u8);
+                } else {
+                    let mirrored_offset = offset & 0x17FFF;
+                    self.vram.write(VRAM_START + mirrored_offset, (value & 0xFF) as u8);
+                    self.vram.write(VRAM_START + mirrored_offset + 1, ((value >> 8) & 0xFF) as u8);
+                }
+            }
+            // OAM with mirroring (halfword writes work normally)
+            0x07000000..=0x07FFFFFF => {
+                let mirrored_addr = OAM_START + (addr & (OAM_SIZE as u32 - 1));
+                self.oam.write(mirrored_addr, (value & 0xFF) as u8);
+                self.oam.write(mirrored_addr + 1, ((value >> 8) & 0xFF) as u8);
+            }
+            // All other addresses use normal byte writes
+            _ => {
+                self.write(addr, (value & 0xFF) as u8);
+                self.write(addr + 1, ((value >> 8) & 0xFF) as u8);
+            }
+        }
+    }
+
+    /// Write 32-bit value (for STR instruction)
+    pub fn write32(&mut self, addr: u32, value: u32) {
+        match addr {
+            // Palette RAM with mirroring
+            0x05000000..=0x05FFFFFF => {
+                let mirrored_addr = PALETTE_RAM_START + (addr & (PALETTE_RAM_SIZE as u32 - 1));
+                self.palette_ram.write(mirrored_addr, (value & 0xFF) as u8);
+                self.palette_ram.write(mirrored_addr + 1, ((value >> 8) & 0xFF) as u8);
+                self.palette_ram.write(mirrored_addr + 2, ((value >> 16) & 0xFF) as u8);
+                self.palette_ram.write(mirrored_addr + 3, ((value >> 24) & 0xFF) as u8);
+            }
+            // VRAM with mirroring
+            0x06000000..=0x06FFFFFF => {
+                let offset = addr & 0x1FFFF;
+                if offset < VRAM_SIZE as u32 {
+                    self.vram.write(VRAM_START + offset, (value & 0xFF) as u8);
+                    self.vram.write(VRAM_START + offset + 1, ((value >> 8) & 0xFF) as u8);
+                    self.vram.write(VRAM_START + offset + 2, ((value >> 16) & 0xFF) as u8);
+                    self.vram.write(VRAM_START + offset + 3, ((value >> 24) & 0xFF) as u8);
+                } else {
+                    let mirrored_offset = offset & 0x17FFF;
+                    self.vram.write(VRAM_START + mirrored_offset, (value & 0xFF) as u8);
+                    self.vram.write(VRAM_START + mirrored_offset + 1, ((value >> 8) & 0xFF) as u8);
+                    self.vram.write(VRAM_START + mirrored_offset + 2, ((value >> 16) & 0xFF) as u8);
+                    self.vram.write(VRAM_START + mirrored_offset + 3, ((value >> 24) & 0xFF) as u8);
+                }
+            }
+            // OAM with mirroring (word writes work normally)
+            0x07000000..=0x07FFFFFF => {
+                let mirrored_addr = OAM_START + (addr & (OAM_SIZE as u32 - 1));
+                self.oam.write(mirrored_addr, (value & 0xFF) as u8);
+                self.oam.write(mirrored_addr + 1, ((value >> 8) & 0xFF) as u8);
+                self.oam.write(mirrored_addr + 2, ((value >> 16) & 0xFF) as u8);
+                self.oam.write(mirrored_addr + 3, ((value >> 24) & 0xFF) as u8);
+            }
+            // All other addresses use normal byte writes
+            _ => {
+                self.write(addr, (value & 0xFF) as u8);
+                self.write(addr + 1, ((value >> 8) & 0xFF) as u8);
+                self.write(addr + 2, ((value >> 16) & 0xFF) as u8);
+                self.write(addr + 3, ((value >> 24) & 0xFF) as u8);
+            }
         }
     }
 }
