@@ -641,7 +641,9 @@ impl ARM7TDMI {
         // Return address should point to the instruction after BL
         let is_thumb = self.registers.get_flag(Flag::ThumbState);
         let return_addr = if is_thumb {
-            instruction_pc.wrapping_add(THUMB_INSTRUCTION_SIZE)
+            // Thumb BL is a 32-bit instruction (4 bytes), not a regular 16-bit instruction
+            // In Thumb mode, set bit 0 of LR to indicate return to Thumb mode
+            instruction_pc.wrapping_add(4) | 1
         } else {
             instruction_pc.wrapping_add(ARM_INSTRUCTION_SIZE)
         };

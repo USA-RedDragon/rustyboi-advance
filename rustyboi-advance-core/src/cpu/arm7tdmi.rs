@@ -479,13 +479,7 @@ impl ARM7TDMI {
         // Calculate return address based on exception type and current mode
         // In ARM mode, PC is 8 ahead; in Thumb mode, PC is 4 ahead
         let return_addr = match exception_vector {
-            VECTOR_SWI | VECTOR_UNDEFINED => {
-                if is_thumb {
-                    self.registers.pc.wrapping_sub(THUMB_INSTRUCTION_SIZE)
-                } else {
-                    self.registers.pc.wrapping_sub(ARM_INSTRUCTION_SIZE)
-                }
-            }
+            VECTOR_SWI | VECTOR_UNDEFINED => self.registers.pc,
             VECTOR_IRQ | VECTOR_FIQ => {
                 if is_thumb {
                     self.registers.pc.wrapping_sub(THUMB_INSTRUCTION_SIZE)
