@@ -244,7 +244,7 @@ impl memory::Addressable for Mmio {
                 let display_mode = dispcnt & 0x7;
                 
                 match display_mode {
-                    3 | 4 | 5 => {
+                    3..=5 => {
                         // In bitmap modes, byte writes to VRAM duplicate the byte
                         if actual_offset >= 0x14000 {
                             return; // Ignore writes beyond valid range
@@ -253,7 +253,7 @@ impl memory::Addressable for Mmio {
                         self.vram.write(aligned_addr, value);
                         self.vram.write(aligned_addr + 1, value);
                     }
-                    0 | 1 | 2 => {
+                    0..=2 => {
                         // In tiled modes, byte writes to VRAM also duplicate
                         if actual_offset >= 0x10000 {
                             return; // Ignore writes beyond valid range
