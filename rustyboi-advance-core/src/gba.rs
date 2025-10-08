@@ -78,6 +78,23 @@ impl GBA {
             return (true, 0);
         }
 
+        // Check for pending DMA transfers (DMA has priority over CPU)
+        if self.mmio.dma.has_pending_dma() {
+            let wait_config = self.cpu.wait_config.clone();
+            
+            // Temporarily take ownership of DMA controller to avoid borrow issues
+            let mut dma = std::mem::take(&mut self.mmio.dma);
+            let dma_cycles = memory::dma::run_dma_transfers(&mut dma, &mut self.mmio, &wait_config);
+            self.mmio.dma = dma;
+            
+            // Step PPU for DMA cycles
+            for _ in 0..dma_cycles {
+                self.ppu.step(&mut self.mmio);
+            }
+            
+            return (false, dma_cycles);
+        }
+
         // Execute one CPU instruction and step PPU accordingly
         let cycles = self.cpu.step(&mut self.mmio);
 

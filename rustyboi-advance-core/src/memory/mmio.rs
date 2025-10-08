@@ -65,6 +65,7 @@ pub struct Mmio {
     oam: memory::Memory<OAM_START, OAM_SIZE>,
     #[serde(skip, default)]
     cartridge: Option<cartridge::Cartridge>,
+    pub dma: memory::dma::DmaController,
 }
 
 impl Default for Mmio {
@@ -84,6 +85,7 @@ impl Mmio {
             palette_ram: memory::Memory::new(),
             vram: memory::Memory::new(),
             oam: memory::Memory::new(),
+            dma: memory::dma::DmaController::new(),
         }
     }
 
@@ -155,7 +157,7 @@ impl memory::Addressable for Mmio {
             0x04000000..=0x04FFFFFF => {
                 let offset = addr & 0x3FF; // Mirror every 1KB
                 if offset <= (IO_REGISTERS_END - IO_REGISTERS_START) {
-                    self.io_registers.read(IO_REGISTERS_START + offset)
+                    self.read_dma_register(offset)
                 } else {
                     EMPTY_BYTE
                 }
@@ -218,7 +220,7 @@ impl memory::Addressable for Mmio {
             0x04000000..=0x04FFFFFF => {
                 let offset = addr & 0x3FF; // Mirror every 1KB
                 if offset <= (IO_REGISTERS_END - IO_REGISTERS_START) {
-                    self.io_registers.write(IO_REGISTERS_START + offset, value);
+                    self.write_dma_register(offset, value);
                 }
             }
             // Palette RAM - byte writes duplicate to both bytes of halfword
@@ -288,6 +290,194 @@ impl memory::Addressable for Mmio {
 }
 
 impl Mmio {
+    /// Handle reads from DMA registers
+    fn read_dma_register(&self, offset: u32) -> u8 {
+        use memory::dma::DmaChannel;
+        
+        match offset {
+            // DMA0 registers (0xB0-0xBB)
+            0xBA => (self.dma.read_cnt_h(DmaChannel::Dma0) & 0xFF) as u8,
+            0xBB => ((self.dma.read_cnt_h(DmaChannel::Dma0) >> 8) & 0xFF) as u8,
+            
+            // DMA1 registers (0xBC-0xC7)
+            0xC6 => (self.dma.read_cnt_h(DmaChannel::Dma1) & 0xFF) as u8,
+            0xC7 => ((self.dma.read_cnt_h(DmaChannel::Dma1) >> 8) & 0xFF) as u8,
+            
+            // DMA2 registers (0xC8-0xD3)
+            0xD2 => (self.dma.read_cnt_h(DmaChannel::Dma2) & 0xFF) as u8,
+            0xD3 => ((self.dma.read_cnt_h(DmaChannel::Dma2) >> 8) & 0xFF) as u8,
+            
+            // DMA3 registers (0xD4-0xDF)
+            0xDE => (self.dma.read_cnt_h(DmaChannel::Dma3) & 0xFF) as u8,
+            0xDF => ((self.dma.read_cnt_h(DmaChannel::Dma3) >> 8) & 0xFF) as u8,
+            
+            _ => self.io_registers.read(IO_REGISTERS_START + offset),
+        }
+    }
+    
+    /// Handle writes to DMA registers
+    fn write_dma_register(&mut self, offset: u32, value: u8) {
+        use memory::dma::DmaChannel;
+        
+        match offset {
+            // DMA0SAD (0xB0-0xB3) - Source Address
+            0xB0 => {
+                let current = self.dma.get_channel(DmaChannel::Dma0).source_addr;
+                self.dma.write_sad(DmaChannel::Dma0, (current & 0xFFFFFF00) | (value as u32));
+            }
+            0xB1 => {
+                let current = self.dma.get_channel(DmaChannel::Dma0).source_addr;
+                self.dma.write_sad(DmaChannel::Dma0, (current & 0xFFFF00FF) | ((value as u32) << 8));
+            }
+            0xB2 => {
+                let current = self.dma.get_channel(DmaChannel::Dma0).source_addr;
+                self.dma.write_sad(DmaChannel::Dma0, (current & 0xFF00FFFF) | ((value as u32) << 16));
+            }
+            0xB3 => {
+                let current = self.dma.get_channel(DmaChannel::Dma0).source_addr;
+                self.dma.write_sad(DmaChannel::Dma0, (current & 0x00FFFFFF) | ((value as u32) << 24));
+            }
+            
+            // DMA0DAD (0xB4-0xB7) - Destination Address
+            0xB4 => {
+                let current = self.dma.get_channel(DmaChannel::Dma0).dest_addr;
+                self.dma.write_dad(DmaChannel::Dma0, (current & 0xFFFFFF00) | (value as u32));
+            }
+            0xB5 => {
+                let current = self.dma.get_channel(DmaChannel::Dma0).dest_addr;
+                self.dma.write_dad(DmaChannel::Dma0, (current & 0xFFFF00FF) | ((value as u32) << 8));
+            }
+            0xB6 => {
+                let current = self.dma.get_channel(DmaChannel::Dma0).dest_addr;
+                self.dma.write_dad(DmaChannel::Dma0, (current & 0xFF00FFFF) | ((value as u32) << 16));
+            }
+            0xB7 => {
+                let current = self.dma.get_channel(DmaChannel::Dma0).dest_addr;
+                self.dma.write_dad(DmaChannel::Dma0, (current & 0x00FFFFFF) | ((value as u32) << 24));
+            }
+            
+            // DMA0CNT_L (0xB8-0xB9) - Word Count
+            0xB8 => {
+                let current = self.dma.get_channel(DmaChannel::Dma0).word_count;
+                self.dma.write_cnt_l(DmaChannel::Dma0, (current & 0xFF00) | (value as u16));
+            }
+            0xB9 => {
+                let current = self.dma.get_channel(DmaChannel::Dma0).word_count;
+                self.dma.write_cnt_l(DmaChannel::Dma0, (current & 0x00FF) | ((value as u16) << 8));
+            }
+            
+            // DMA0CNT_H (0xBA-0xBB) - Control
+            0xBA => {
+                let current = self.dma.read_cnt_h(DmaChannel::Dma0);
+                self.dma.write_cnt_h(DmaChannel::Dma0, (current & 0xFF00) | (value as u16));
+            }
+            0xBB => {
+                let current = self.dma.read_cnt_h(DmaChannel::Dma0);
+                self.dma.write_cnt_h(DmaChannel::Dma0, (current & 0x00FF) | ((value as u16) << 8));
+            }
+            
+            // DMA1 registers (0xBC-0xC7)
+            0xBC..=0xBF => {
+                let byte_offset = offset - 0xBC;
+                let current = self.dma.get_channel(DmaChannel::Dma1).source_addr;
+                let shift = byte_offset * 8;
+                let mask = !(0xFF << shift);
+                self.dma.write_sad(DmaChannel::Dma1, (current & mask) | ((value as u32) << shift));
+            }
+            0xC0..=0xC3 => {
+                let byte_offset = offset - 0xC0;
+                let current = self.dma.get_channel(DmaChannel::Dma1).dest_addr;
+                let shift = byte_offset * 8;
+                let mask = !(0xFF << shift);
+                self.dma.write_dad(DmaChannel::Dma1, (current & mask) | ((value as u32) << shift));
+            }
+            0xC4 => {
+                let current = self.dma.get_channel(DmaChannel::Dma1).word_count;
+                self.dma.write_cnt_l(DmaChannel::Dma1, (current & 0xFF00) | (value as u16));
+            }
+            0xC5 => {
+                let current = self.dma.get_channel(DmaChannel::Dma1).word_count;
+                self.dma.write_cnt_l(DmaChannel::Dma1, (current & 0x00FF) | ((value as u16) << 8));
+            }
+            0xC6 => {
+                let current = self.dma.read_cnt_h(DmaChannel::Dma1);
+                self.dma.write_cnt_h(DmaChannel::Dma1, (current & 0xFF00) | (value as u16));
+            }
+            0xC7 => {
+                let current = self.dma.read_cnt_h(DmaChannel::Dma1);
+                self.dma.write_cnt_h(DmaChannel::Dma1, (current & 0x00FF) | ((value as u16) << 8));
+            }
+            
+            // DMA2 registers (0xC8-0xD3)
+            0xC8..=0xCB => {
+                let byte_offset = offset - 0xC8;
+                let current = self.dma.get_channel(DmaChannel::Dma2).source_addr;
+                let shift = byte_offset * 8;
+                let mask = !(0xFF << shift);
+                self.dma.write_sad(DmaChannel::Dma2, (current & mask) | ((value as u32) << shift));
+            }
+            0xCC..=0xCF => {
+                let byte_offset = offset - 0xCC;
+                let current = self.dma.get_channel(DmaChannel::Dma2).dest_addr;
+                let shift = byte_offset * 8;
+                let mask = !(0xFF << shift);
+                self.dma.write_dad(DmaChannel::Dma2, (current & mask) | ((value as u32) << shift));
+            }
+            0xD0 => {
+                let current = self.dma.get_channel(DmaChannel::Dma2).word_count;
+                self.dma.write_cnt_l(DmaChannel::Dma2, (current & 0xFF00) | (value as u16));
+            }
+            0xD1 => {
+                let current = self.dma.get_channel(DmaChannel::Dma2).word_count;
+                self.dma.write_cnt_l(DmaChannel::Dma2, (current & 0x00FF) | ((value as u16) << 8));
+            }
+            0xD2 => {
+                let current = self.dma.read_cnt_h(DmaChannel::Dma2);
+                self.dma.write_cnt_h(DmaChannel::Dma2, (current & 0xFF00) | (value as u16));
+            }
+            0xD3 => {
+                let current = self.dma.read_cnt_h(DmaChannel::Dma2);
+                self.dma.write_cnt_h(DmaChannel::Dma2, (current & 0x00FF) | ((value as u16) << 8));
+            }
+            
+            // DMA3 registers (0xD4-0xDF)
+            0xD4..=0xD7 => {
+                let byte_offset = offset - 0xD4;
+                let current = self.dma.get_channel(DmaChannel::Dma3).source_addr;
+                let shift = byte_offset * 8;
+                let mask = !(0xFF << shift);
+                self.dma.write_sad(DmaChannel::Dma3, (current & mask) | ((value as u32) << shift));
+            }
+            0xD8..=0xDB => {
+                let byte_offset = offset - 0xD8;
+                let current = self.dma.get_channel(DmaChannel::Dma3).dest_addr;
+                let shift = byte_offset * 8;
+                let mask = !(0xFF << shift);
+                self.dma.write_dad(DmaChannel::Dma3, (current & mask) | ((value as u32) << shift));
+            }
+            0xDC => {
+                let current = self.dma.get_channel(DmaChannel::Dma3).word_count;
+                self.dma.write_cnt_l(DmaChannel::Dma3, (current & 0xFF00) | (value as u16));
+            }
+            0xDD => {
+                let current = self.dma.get_channel(DmaChannel::Dma3).word_count;
+                self.dma.write_cnt_l(DmaChannel::Dma3, (current & 0x00FF) | ((value as u16) << 8));
+            }
+            0xDE => {
+                let current = self.dma.read_cnt_h(DmaChannel::Dma3);
+                self.dma.write_cnt_h(DmaChannel::Dma3, (current & 0xFF00) | (value as u16));
+            }
+            0xDF => {
+                let current = self.dma.read_cnt_h(DmaChannel::Dma3);
+                self.dma.write_cnt_h(DmaChannel::Dma3, (current & 0x00FF) | ((value as u16) << 8));
+            }
+            
+            _ => {
+                self.io_registers.write(IO_REGISTERS_START + offset, value);
+            }
+        }
+    }
+
     /// Write 16-bit value (for STRH instruction)
     pub fn write16(&mut self, addr: u32, value: u16) {
         match addr {
