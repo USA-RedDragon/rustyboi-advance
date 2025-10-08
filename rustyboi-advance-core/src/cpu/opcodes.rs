@@ -359,8 +359,11 @@ impl ARM7TDMI {
     ) -> u32 {
         use crate::memory::Addressable;
 
-        // When Rd == Rn with writeback, we must store the OLD value of the register
-        let value = self.registers.read_register(rd);
+        let mut value = self.registers.read_register(rd);
+
+        if rd == Register::PC {
+            value = value.wrapping_add(4) // Always PC + 4 for STR, regardless of mode
+        }
 
         let (addr, writeback) = self.calculate_address(rn, addressing, instruction_pc);
 
@@ -636,8 +639,6 @@ impl ARM7TDMI {
 
     #[inline]
     pub fn execute_branch_link(&mut self, target: u32, instruction_pc: u32) -> u32 {
-        // Save return address in LR
-        // Return address should point to the instruction after BL
         let is_thumb = self.registers.get_flag(Flag::ThumbState);
         let return_addr = if is_thumb {
             // Thumb BL is a 32-bit instruction (4 bytes), not a regular 16-bit instruction
@@ -697,7 +698,7 @@ impl ARM7TDMI {
         let base = if rn == Register::PC {
             let is_thumb = self.registers.get_flag(Flag::ThumbState);
             if is_thumb {
-                (instruction_pc.wrapping_add(THUMB_PC_OFFSET)) & !3
+                instruction_pc.wrapping_add(THUMB_PC_OFFSET)
             } else {
                 instruction_pc.wrapping_add(ARM_PC_OFFSET)
             }
@@ -757,7 +758,7 @@ impl ARM7TDMI {
         let base = if rn == Register::PC {
             let is_thumb = self.registers.get_flag(Flag::ThumbState);
             if is_thumb {
-                (instruction_pc.wrapping_add(THUMB_PC_OFFSET)) & !3
+                instruction_pc.wrapping_add(THUMB_PC_OFFSET)
             } else {
                 instruction_pc.wrapping_add(ARM_PC_OFFSET)
             }
@@ -1336,7 +1337,12 @@ impl ARM7TDMI {
         // STM with empty rlist stores PC and adjusts base register by 0x40
         // It simulates storing 16 registers (0x40 bytes)
         if register_count == 0 {
-            let pc_value = self.registers.read_register(Register::PC);
+            let mut pc_value = self.registers.read_register(Register::PC);
+            pc_value = if !self.registers.get_flag(Flag::ThumbState) {
+                pc_value.wrapping_add(4)
+            } else {
+                pc_value.wrapping_add(2)
+            };
             
             // Determine store address based on addressing mode
             // Empty list behaves as if storing 16 registers
@@ -1444,7 +1450,7 @@ impl ARM7TDMI {
                 
                 // Special case: if this is the base register and it's the first in the list,
                 // store the original (pre-writeback) value
-                let value = if reg == rn && base_is_first {
+                let mut value = if reg == rn && base_is_first {
                     original_base
                 } else if user_mode && reg_num != 15 {
                     // User mode transfer (S bit set, not storing PC)
@@ -1453,6 +1459,10 @@ impl ARM7TDMI {
                 } else {
                     self.registers.read_register(reg)
                 };
+
+                if reg_num == 15 {
+                    value = value.wrapping_add(4);
+                }
 
                 (mmio as &mut dyn Addressable).write32(current_addr, value);
 

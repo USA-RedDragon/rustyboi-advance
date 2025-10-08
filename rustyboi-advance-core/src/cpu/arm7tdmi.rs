@@ -271,25 +271,29 @@ impl ARM7TDMI {
         // Fetch -> Decode: Move fetched instruction to decode
         self.pipeline.decode = self.pipeline.fetch.take();
 
-        // Fetch new instruction
-        let pc = self.registers.pc;
+        // Advance PC to point to the next instruction to fetch
         let is_thumb = self.registers.get_flag(registers::Flag::ThumbState);
+        let pc_increment = if is_thumb { 2 } else { 4 };
+        self.registers.pc = self.registers.pc.wrapping_add(pc_increment);
+        
+        // Fetch new instruction from the updated PC
+        let fetch_pc = self.registers.pc;
 
-        // Decode the instruction for structured access
+        // Decode the instruction for structured access  
         let (decoded_instruction, fetch_cycles) = if !is_thumb {
             // ARM mode: read 32-bit instruction
-            let (instruction, cycles) = self.read_memory_timed(mmio, pc);
-            let decoded = Some(Disassembler::decode_opcode(instruction, pc, |offset| {
-                (mmio as &dyn memory::Addressable).read32(pc + offset)
+            let (instruction, cycles) = self.read_memory_timed(mmio, fetch_pc);
+            let decoded = Some(Disassembler::decode_opcode(instruction, fetch_pc, |offset| {
+                (mmio as &dyn memory::Addressable).read32(fetch_pc + offset)
             }));
             (decoded, cycles)
         } else {
             // Thumb mode: read 16-bit instruction
-            let (instruction, cycles) = self.read_memory_timed(mmio, pc);
+            let (instruction, cycles) = self.read_memory_timed(mmio, fetch_pc);
             let thumb_opcode = (instruction & 0xFFFF) as u16;
             let decoded = Some(Disassembler::decode_thumb_opcode(
                 thumb_opcode,
-                pc,
+                fetch_pc,
                 |addr| {
                     let word = (mmio as &dyn memory::Addressable).read32(addr);
                     (word & 0xFFFF) as u16
@@ -300,17 +304,9 @@ impl ARM7TDMI {
 
         self.pipeline.fetch = Some(PipelineInstruction {
             instruction: decoded_instruction,
-            pc,
-            is_thumb: self.registers.get_flag(registers::Flag::ThumbState),
+            pc: fetch_pc,
+            is_thumb,
         });
-
-        // Increment PC for next fetch
-        let pc_increment = if self.registers.get_flag(registers::Flag::ThumbState) {
-            2
-        } else {
-            4
-        };
-        self.registers.pc = self.registers.pc.wrapping_add(pc_increment);
 
         total_cycles + fetch_cycles
     }
@@ -410,9 +406,10 @@ impl ARM7TDMI {
             is_thumb,
         });
 
-        // Update PC to point to the next instruction to be fetched
-        // PC should be 12 bytes ahead of execute stage (8 + 4) in ARM mode, or 6 bytes ahead (4 + 2) in Thumb mode
-        self.registers.pc = original_pc.wrapping_add(instruction_size * 3);
+        // Update PC to point to the instruction being fetched
+        // PC should point to the fetch stage instruction  
+        // This is 8 bytes ahead of execute stage in ARM mode, or 4 bytes ahead in Thumb mode
+        self.registers.pc = original_pc.wrapping_add(instruction_size * 2);
 
         // Return the actual cycles used for pipeline refill
         // This will be 2S + 1N typically, but depends on actual memory timings
@@ -477,25 +474,45 @@ impl ARM7TDMI {
         let is_thumb = self.registers.get_flag(registers::Flag::ThumbState);
 
         // Calculate return address based on exception type and current mode
-        // In ARM mode, PC is 8 ahead; in Thumb mode, PC is 4 ahead
+        // PC points to instruction being fetched (2 instructions ahead of execute)
+        // We need to calculate the appropriate return address for each exception type
         let return_addr = match exception_vector {
-            VECTOR_SWI | VECTOR_UNDEFINED => self.registers.pc,
-            VECTOR_IRQ | VECTOR_FIQ => {
+            VECTOR_SWI | VECTOR_UNDEFINED => {
+                // For SWI and undefined instructions, return to the instruction after the faulting instruction
+                // The faulting instruction is in execute stage, so PC - 8 (ARM) or PC - 4 (Thumb)
+                // We want to return to the next instruction, so that's PC - 4 (ARM) or PC - 2 (Thumb)
                 if is_thumb {
                     self.registers.pc.wrapping_sub(THUMB_INSTRUCTION_SIZE)
+                } else {
+                    self.registers.pc.wrapping_sub(ARM_INSTRUCTION_SIZE)
+                }
+            }
+            VECTOR_IRQ | VECTOR_FIQ => {
+                // For interrupts, return to the instruction that was about to be executed
+                // That's PC - 8 (ARM) or PC - 4 (Thumb) to get back to the execute stage
+                if is_thumb {
+                    self.registers.pc.wrapping_sub(ARM_INSTRUCTION_SIZE)
                 } else {
                     self.registers.pc.wrapping_sub(ARM_INSTRUCTION_SIZE)
                 }
             }
             VECTOR_PREFETCH_ABORT => {
+                // Prefetch abort occurs on the instruction in the execute stage
+                // Return to that instruction to retry
                 if is_thumb {
-                    self.registers.pc.wrapping_sub(THUMB_INSTRUCTION_SIZE)
+                    self.registers.pc.wrapping_sub(ARM_INSTRUCTION_SIZE)
                 } else {
                     self.registers.pc.wrapping_sub(ARM_INSTRUCTION_SIZE)
                 }
             }
             VECTOR_DATA_ABORT => {
-                self.registers.pc
+                // Data abort occurs on the instruction after the one that caused it
+                // Return to the instruction after the faulting one
+                if is_thumb {
+                    self.registers.pc.wrapping_sub(THUMB_INSTRUCTION_SIZE)
+                } else {
+                    self.registers.pc.wrapping_sub(ARM_INSTRUCTION_SIZE)
+                }
             }
             _ => self.registers.pc,
         };
