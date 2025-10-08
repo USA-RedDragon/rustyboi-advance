@@ -24,7 +24,7 @@ egui = "0.32.3"
 egui-wgpu = { version = "0.32.3", features = ["winit"] }
 log = "0.4.28"
 pollster = "0.3"
-rodio = "0.19"
+rodio = "0.21.1"
 serde_json = "1.0.145"
 winit = "0.30.12"
 web-time = "1.1.0"
