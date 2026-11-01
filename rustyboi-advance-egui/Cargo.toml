@@ -14,11 +14,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 rustyboi-advance-core = { path = "../rustyboi-advance-core" }
 rustyboi-advance-debugger = { path = "../rustyboi-advance-debugger" }
 egui = "0.32.3"
-web-time = "1.1.0"
+web-time = "=1.1.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rfd = "0.15.4"
+rfd = "=0.15.4"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-rfd = { version = "0.15.4", features = ["async-std"] }
-wasm-bindgen-futures = "0.4.54"
+rfd = { version = "=0.15.4", features = ["async-std"] }
+wasm-bindgen-futures = "=0.4.54"
